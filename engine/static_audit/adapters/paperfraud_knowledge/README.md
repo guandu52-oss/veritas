@@ -36,40 +36,77 @@ knowledge/
 - **methodology_review**: 方法论合理性审核。检测研究设计是否合理、统计方法是否恰当。设计缺陷 ≠ 学术不端。
 - **fraud_detection**: 数据/文本造假检测。检测数值编造、图像篡改、文本模板化等学术不端信号。
 
-## 如何使用
+## Veritas pipeline 用法
+
+在 Veritas 中不要直接从 `paperfraud.knowledge` 导入。当前一方入口是：
+
+```python
+from pathlib import Path
+
+from engine.static_audit.tools.paperfraud_rules import (
+    paperfraud_findings_from_matches,
+    run_paperfraud_rule_match,
+)
+
+artifact = run_paperfraud_rule_match(
+    Path("outputs/<case>/research-integrity-audit/full.md"),
+    Path("outputs/<case>/research-integrity-audit/paperfraud_rule_matches.json"),
+)
+findings = paperfraud_findings_from_matches(artifact)
+```
+
+`audit-paper` 会在 MinerU 生成 `full.md` 后自动运行该工具：
+
+```text
+full.md
+  -> paperfraud.rule_match
+  -> paperfraud_rule_matches.json
+  -> StaticAuditBundle.findings[PF-*]
+  -> final_audit_report.html / PaperFraud 规则库命中
+```
+
+Tool Registry 条目：
+
+```text
+tool_id: paperfraud.rule_match
+step_key: paperfraud_rule_match
+artifact: paperfraud_rule_matches.json
+```
+
+这些规则命中是 reviewer prompts，不是最终学术不端判定。报告中必须保持“需人工复核”的措辞。
+
+## 直接 API 用法
 
 ### 1. Python API
 
 ```python
-from paperfraud.knowledge import KnowledgeBase, RuleMatcher
+from engine.static_audit.adapters.paperfraud_knowledge import (
+    generate_reviewer_form,
+    load_knowledge_base,
+    match_rules,
+)
 
-# 加载规则
-kb = KnowledgeBase()
-kb.load_all()
-print(kb)  # KnowledgeBase(5 rule sets, 44 rules)
-
-# 查询
-red_rules = kb.by_severity("red")
-study_rules = kb.get_category("study_design")
-
-# 搜索
-results = kb.search("样本量")
+# 加载规则：当前应为 48 条
+rules = load_knowledge_base()
 
 # 匹配论文文本
-matcher = RuleMatcher()
-matches = matcher.match_rules(study_rules.rules, paper_text=full_text)
-for m in matches:
-    if m.triggered:
-        print(f"  [{m.rule.severity}] {m.rule.title}")
-        print(f"  Evidence: {m.format_evidence()}")
+matches = match_rules(rules, paper_full_text=full_text)
+for match in matches:
+    if match.triggered:
+        print(f"[{match.rule.severity}] {match.rule.id}: {match.rule.title}")
+
+form = generate_reviewer_form(rules)
 ```
 
 ### 2. 生成 Reviewer 评分表
 
 ```python
-kb = KnowledgeBase()
-kb.load_all()
-form = kb.reviewer_form(["study_design", "confounding", "reporting_standards"])
+from engine.static_audit.adapters.paperfraud_knowledge import (
+    generate_reviewer_form,
+    load_knowledge_base,
+)
+
+form = generate_reviewer_form(load_knowledge_base())
 # → 每行一条规则，包含 Y/N/Partial 评分字段
 ```
 

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 from collections import Counter, defaultdict
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 from html import escape
 from pathlib import Path
 from typing import Any
@@ -26,6 +26,7 @@ def render_static_audit_html(workdir: Path, case_id: str) -> str:
     ledger = read_json(workdir / "evidence_ledger.json") or {}
     exact_images = read_json(workdir / "exact_image_duplicates.json") or {}
     similarity = read_json(workdir / "image_similarity_candidates.json") or {}
+    paperfraud_matches = read_json(workdir / "paperfraud_rule_matches.json") or {}
     agent_judge = read_json(workdir / "agent_judge.json") or {}
     source_auditor = read_json(workdir / "agent_source_data_auditor.json") or {}
     claim_extractor = read_json(workdir / "agent_claim_extractor.json") or {}
@@ -577,6 +578,10 @@ def render_static_audit_html(workdir: Path, case_id: str) -> str:
       {manual_tasks_table(manual_tasks)}
     </section>
 
+    <section class="panel section" id="paperfraud-rules">
+      {paperfraud_rule_section(paperfraud_matches)}
+    </section>
+
     <section class="panel section" id="coverage">
       <h2>覆盖范围与限制</h2>
       <div class="grid cols-4">
@@ -695,7 +700,7 @@ def render_static_audit_html(workdir: Path, case_id: str) -> str:
         </details>
       </div>
     </section>
-    <div class="footer">生成时间：{h(datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ"))}。证据优先，Agent 辅助解释，关键结论必须人工复核。</div>
+    <div class="footer">生成时间：{h(datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"))}。证据优先，Agent 辅助解释，关键结论必须人工复核。</div>
   </main>
 </body>
 </html>
@@ -706,6 +711,43 @@ def write_static_audit_html(workdir: Path, case_id: str) -> Path:
     path = workdir / "final_audit_report.html"
     path.write_text(render_static_audit_html(workdir, case_id), encoding="utf-8")
     return path
+
+
+def paperfraud_rule_section(artifact: dict[str, Any]) -> str:
+    summary = artifact.get("summary") if isinstance(artifact.get("summary"), dict) else {}
+    triggered = [item for item in (artifact.get("triggered_rules") or []) if isinstance(item, dict)]
+    rows = []
+    for item in triggered[:12]:
+        rows.append(
+            "<tr>"
+            f"<td><code>{h(item.get('rule_id', '-'))}</code></td>"
+            f"<td>{h(item.get('severity', '-'))}</td>"
+            f"<td>{h(item.get('rule_type', '-'))}</td>"
+            f"<td>{h(item.get('title', '-'))}</td>"
+            f"<td>{h(item.get('evidence', '-'))}</td>"
+            f"<td>{h(item.get('human_review', '-'))}</td>"
+            "</tr>"
+        )
+    table = (
+        "<table><thead><tr>"
+        "<th>rule_id</th><th>severity</th><th>type</th><th>title</th><th>evidence</th><th>human review</th>"
+        "</tr></thead><tbody>"
+        + "".join(rows)
+        + "</tbody></table>"
+        if rows
+        else "<p class='muted'>未命中 PaperFraud 规则库提示项，或尚未生成 paperfraud_rule_matches.json。</p>"
+    )
+    return f"""
+      <h2>PaperFraud 规则库命中</h2>
+      <p class="muted">这些命中是方法学和 fraud-pattern reviewer prompts，只用于收敛人工复核问题，不构成最终学术不端判定。</p>
+      <div class="grid cols-4">
+        {metric("规则数", summary.get("total_rules_loaded", "-"))}
+        {metric("命中数", summary.get("total_triggered", "-"))}
+        {metric("methodology", summary.get("methodology_review_triggered", "-"))}
+        {metric("fraud-pattern", summary.get("fraud_detection_triggered", "-"))}
+      </div>
+      {table}
+    """
 
 
 def collect_report_findings(

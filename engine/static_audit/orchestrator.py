@@ -11,7 +11,7 @@ import subprocess
 import sys
 import time
 from dataclasses import dataclass, asdict
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable
 
@@ -19,7 +19,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from engine.static_audit.models import (
+from engine.static_audit.models import (  # noqa: E402
     AgentTrace,
     Claim,
     ClaimMapping,
@@ -30,21 +30,25 @@ from engine.static_audit.models import (
     StaticAuditBundle,
     ToolRun,
 )
-from engine.static_audit.html_report import write_static_audit_html
-from engine.static_audit.investigation import (
+from engine.static_audit.html_report import write_static_audit_html  # noqa: E402
+from engine.static_audit.investigation import (  # noqa: E402
     InvestigationAction,
     InvestigationRecord,
     append_investigation_record,
     normalize_expected_evidence_type,
     read_investigation_records,
 )
-from engine.static_audit.materials import (
+from engine.static_audit.materials import (  # noqa: E402
     build_material_inventory,
     fallback_optional_lanes,
     write_material_inventory,
 )
-from engine.static_audit.roles import ROLE_DEFINITIONS, RoleDefinition, skipped_trace
-from engine.investigation.opencode_agent import (
+from engine.static_audit.tools.paperfraud_rules import (  # noqa: E402
+    paperfraud_findings_from_matches,
+    run_paperfraud_rule_match,
+)
+from engine.static_audit.roles import ROLE_DEFINITIONS, RoleDefinition, skipped_trace  # noqa: E402
+from engine.investigation.opencode_agent import (  # noqa: E402
     DEFAULT_SOURCE_FINDING_PARAMS,
     AgentRunResult,
     result_metadata,
@@ -55,9 +59,10 @@ from engine.investigation.opencode_agent import (
     run_agent_role,
     write_agent_result,
 )
-from engine.tools.registry import (
+from engine.tools.registry import (  # noqa: E402
     IMAGE_SIMILARITY_TOOL_ID,
     PAPER_STATIC_AUDIT_TOOL_IDS,
+    PAPERFRAUD_RULE_MATCH_TOOL_ID,
     SOURCE_DATA_FINDINGS_TOOL_ID,
     SOURCE_DATA_PAIR_FORENSICS_TOOL_ID,
     STATIC_AUDIT_V1_TOOL_IDS,
@@ -73,6 +78,7 @@ STEP_TOOL_IDS = {
     "mineru": "mineru.parse_pdf",
     "evidence_ledger": "paper.evidence_ledger",
     "numeric_forensics": "paper.numeric_forensics",
+    "paperfraud_rule_match": PAPERFRAUD_RULE_MATCH_TOOL_ID,
     "material_inventory": "material.inventory",
     "agent_material_plan": "agent.material_plan",
     "source_data_profile": "source_data.profile",
@@ -109,7 +115,7 @@ def emit_progress(progress: ProgressCallback | None, event: str, **payload: Any)
     progress(
         {
             "event": event,
-            "timestamp": datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
+            "timestamp": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
             **payload,
         }
     )
@@ -1065,7 +1071,7 @@ def generate_report(
             ["agent_material_plan", workdir / "agent_material_plan.json"],
             ["workdir", workdir],
             ["agent_mode", agent_mode],
-            ["generated_at", datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")],
+            ["generated_at", datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")],
         ],
     ))
     lines.append("")
@@ -1566,6 +1572,7 @@ def collect_evidence_items(workdir: Path) -> list[EvidenceItem]:
         ("agent_material_plan.json", "output_artifact"),
         ("evidence_ledger.json", "output_artifact"),
         ("numeric_forensics.json", "output_artifact"),
+        ("paperfraud_rule_matches.json", "output_artifact"),
         ("source_data_profile.json", "output_artifact"),
         ("source_data_findings.json", "output_artifact"),
         ("source_data_pair_forensics.json", "output_artifact"),
@@ -1650,6 +1657,8 @@ def collect_claims_and_findings(
         )
 
     findings: list[Finding] = []
+    paperfraud_matches = read_json(workdir / "paperfraud_rule_matches.json") or {}
+    findings.extend(paperfraud_findings_from_matches(paperfraud_matches))
     for item in source_findings.get("priority_findings") or []:
         finding_id = str(item.get("finding_id"))
         findings.append(
@@ -2359,9 +2368,35 @@ def _run_static_audit_from_args(
                 progress=progress,
             )
         )
+        paperfraud_output = workdir / "paperfraud_rule_matches.json"
+        if paperfraud_output.exists() and not args.force:
+            record_step(
+                steps,
+                StepResult(
+                    "paperfraud_rule_match",
+                    "PaperFraud 规则库匹配",
+                    "reused",
+                    "Existing paperfraud_rule_matches.json found.",
+                ),
+                progress,
+            )
+        else:
+            emit_step_start(
+                progress,
+                "paperfraud_rule_match",
+                "PaperFraud 规则库匹配",
+                "Matching structured PaperFraud rules against parsed paper text.",
+            )
+            run_paperfraud_rule_match(workdir / "full.md", paperfraud_output)
+            record_step(
+                steps,
+                StepResult("paperfraud_rule_match", "PaperFraud 规则库匹配", "ran", str(paperfraud_output)),
+                progress,
+            )
     else:
         record_step(steps, StepResult("evidence_ledger", "构建 evidence ledger", "skipped", "full.md missing."), progress)
         record_step(steps, StepResult("numeric_forensics", "PDF 数字取证", "skipped", "full.md missing."), progress)
+        record_step(steps, StepResult("paperfraud_rule_match", "PaperFraud 规则库匹配", "skipped", "full.md missing."), progress)
 
     if source_lane and source_data_dir and source_data_dir.is_dir():
         steps.append(
@@ -2616,7 +2651,7 @@ def _run_static_audit_from_args(
     manifest = {
         "schema_version": "1.0",
         "created_by": "engine/static_audit/orchestrator.py",
-        "created_at": datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "created_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
         "case_id": case_id,
         "paper_dir": str(paper_dir),
         "paper_pdf": str(paper_pdf),

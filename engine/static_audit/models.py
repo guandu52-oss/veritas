@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import asdict, dataclass, field
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Literal
 
@@ -34,7 +34,7 @@ Status = Literal[
 
 
 def utc_now_iso() -> str:
-    return datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 @dataclass
@@ -150,4 +150,3 @@ class StaticAuditBundle:
 
 def load_static_audit_bundle(path: Path) -> dict[str, Any]:
     return json.loads(path.read_text(encoding="utf-8"))
-
