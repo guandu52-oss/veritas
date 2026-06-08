@@ -180,16 +180,16 @@ rules:
           - "correlation"
           - "Pearson"
           - "Spearman"
-          - "associated with"
-          - "related to"
           - "correlated"
+          - pattern: "(?:significantly|significantly)\\s+(?:correlated|associated|related)"
+            type: "regex"
           - "相关"
           - "关联"
-        additional_conditions:
-          - "also_contains: cause"
-          - "also_contains: lead to"
-          - "also_contains: 导致"
-          - "also_contains: 引起"
+        negative_triggers:
+          - "associated with"  # cautious language, not causal
+          - "related to"       # cautious language, not causal
+          - "no significant correlation"
+          - "no significant association"
     evidence_template: >
       [RULE stats.correlation_causation]
       疑似将相关性分析结果当作因果关系。上下文: "{excerpt}"
@@ -213,15 +213,26 @@ rules:
       triggers:
         keywords:
           - "Likert"
-          - "score"
-          - "scale"
-          - "grade"
-          - "rank"
           - "severity score"
           - "pain score"
+          - "clinical score"
+          - "pathology score"
+          - "histology score"
           - "量表"
           - "评分"
-        additional_conditions:
+          - pattern: "(?:mean|median|average)\\s+(?:score|grade|rank)"
+            type: "regex"
+        negative_triggers:
+          - "phastCons score"
+          - "phyloP score"
+          - "conservation score"
+          - "alignment score"
+          - "BLAST score"
+          - "Z-score"
+          - "z score"
+          - "propensity score"
+          - "risk score"
+      additional_conditions:
           - "also_contains: t-test"
           - "also_contains: ANOVA"
           - "also_contains: t test"

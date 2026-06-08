@@ -157,7 +157,8 @@ def _match_single(
 ) -> RuleMatch:
     """Check a single rule against paper text."""
     triggers = rule.detection.get("triggers", {})
-    negatives = triggers.get("negative_triggers", [])
+    # negative_triggers may be inside detection.triggers or directly under detection
+    negatives = triggers.get("negative_triggers", []) or rule.detection.get("negative_triggers", [])
     keywords = triggers.get("keywords", [])
     study_types = triggers.get("study_types", [])
 
