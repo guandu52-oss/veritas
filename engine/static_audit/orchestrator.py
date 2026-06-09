@@ -58,6 +58,7 @@ from engine.investigation.opencode_agent import (
 from engine.tools.registry import (
     IMAGE_SIMILARITY_TOOL_ID,
     PAPER_STATIC_AUDIT_TOOL_IDS,
+    SOURCE_DATA_CROSS_SHEET_TOOL_ID,
     SOURCE_DATA_FINDINGS_TOOL_ID,
     SOURCE_DATA_PAIR_FORENSICS_TOOL_ID,
     STATIC_AUDIT_V1_TOOL_IDS,
@@ -78,6 +79,7 @@ STEP_TOOL_IDS = {
     "source_data_profile": "source_data.profile",
     "source_data_findings": "source_data.findings",
     "source_data_pair_forensics": "source_data.pair_forensics",
+    "source_data_cross_sheet": "source_data.cross_sheet",
     "exact_image_duplicates": "image.exact_duplicates",
     "image_similarity_candidates": "image.similarity_candidates",
     "agent_plan": "agent.plan",
@@ -920,6 +922,23 @@ def run_investigation_tool_action(
             "--min-duplicate-row-width",
             str(params.get("min_duplicate_row_width", 2)),
         ]
+    elif action.tool_id == SOURCE_DATA_CROSS_SHEET_TOOL_ID:
+        output = action_dir / "source_data_cross_sheet.json"
+        params = action.params
+        command = [
+            sys.executable,
+            "-m",
+            "engine.static_audit.tools.source_data_cross_sheet",
+            str(source_data_dir),
+            "--output",
+            str(output),
+            "--min-overlap",
+            str(params.get("min_overlap", 10)),
+            "--min-support",
+            str(params.get("min_support", 0.95)),
+            "--max-findings",
+            str(params.get("max_findings", 50)),
+        ]
     elif action.tool_id == IMAGE_SIMILARITY_TOOL_ID:
         images_dir = workdir / "images"
         if not images_dir.is_dir():
@@ -1538,7 +1557,7 @@ def build_static_audit_bundle(
             "Static audit bundle v1 is generated from deterministic artifacts and current Agent review output.",
             "Code execution audit is not connected in this static-audit run.",
         ],
-        execution_status=ExecutionStatus(status="not_provided"),
+        execution_status=execution_status,
         metadata={
             "agent": agent_manifest,
             "investigation_records": read_investigation_records(workdir),
@@ -2433,6 +2452,25 @@ def _run_static_audit_from_args(
                     progress=progress,
                 )
             )
+            steps.append(
+                run_command(
+                    "source_data_cross_sheet",
+                    "Source Data cross-sheet duplicates",
+                    [
+                        sys.executable,
+                        "-m",
+                        "engine.static_audit.tools.source_data_cross_sheet",
+                        str(source_data_dir),
+                        "--output",
+                        str(workdir / "source_data_cross_sheet.json"),
+                    ],
+                    [workdir / "source_data_cross_sheet.json"],
+                    cwd=PROJECT_ROOT,
+                    env=env,
+                    force=args.force,
+                    progress=progress,
+                )
+            )
         else:
             record_step(
                 steps,
@@ -2442,6 +2480,11 @@ def _run_static_audit_from_args(
             record_step(
                 steps,
                 StepResult("source_data_pair_forensics", "Source Data pair forensics", "skipped", "source_data_profile.json missing."),
+                progress,
+            )
+            record_step(
+                steps,
+                StepResult("source_data_cross_sheet", "Source Data cross-sheet duplicates", "skipped", "source_data_profile.json missing."),
                 progress,
             )
     else:

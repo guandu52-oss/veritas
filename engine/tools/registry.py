@@ -6,6 +6,7 @@ from typing import Any
 
 SOURCE_DATA_FINDINGS_TOOL_ID = "source_data.findings"
 SOURCE_DATA_PAIR_FORENSICS_TOOL_ID = "source_data.pair_forensics"
+SOURCE_DATA_CROSS_SHEET_TOOL_ID = "source_data.cross_sheet"
 IMAGE_SIMILARITY_TOOL_ID = "image.similarity_candidates"
 
 EXECUTION_PHASE_MANDATORY_BOOTSTRAP = "mandatory_bootstrap"
@@ -148,6 +149,27 @@ TOOLS: dict[str, ToolDefinition] = {
             "min_duplicate_row_width": {"type": "integer", "minimum": 2, "maximum": 20},
         },
     ),
+    SOURCE_DATA_CROSS_SHEET_TOOL_ID: ToolDefinition(
+        tool_id=SOURCE_DATA_CROSS_SHEET_TOOL_ID,
+        step_key="source_data_cross_sheet",
+        title="Source Data cross-sheet duplicates",
+        source="engine/static_audit/tools",
+        description="Detect duplicate numeric columns across different sheets and workbooks.",
+        expected_outputs=("source_data_cross_sheet.json",),
+        parameter_defaults={
+            "min_overlap": 10,
+            "min_support_rate": 0.8,
+            "max_findings": 50,
+        },
+        agent_selectable=True,
+        input_artifacts=("source_data_dir",),
+        output_artifacts=("source_data_cross_sheet.json",),
+        param_schema={
+            "min_overlap": {"type": "integer", "minimum": 5, "maximum": 50},
+            "min_support_rate": {"type": "number", "minimum": 0.5, "maximum": 1.0},
+            "max_findings": {"type": "integer", "minimum": 10, "maximum": 200},
+        },
+    ),
     "image.exact_duplicates": ToolDefinition(
         tool_id="image.exact_duplicates",
         step_key="exact_image_duplicates",
@@ -260,6 +282,7 @@ PAPER_STATIC_AUDIT_TOOL_IDS = (
     "source_data.profile",
     SOURCE_DATA_FINDINGS_TOOL_ID,
     SOURCE_DATA_PAIR_FORENSICS_TOOL_ID,
+    SOURCE_DATA_CROSS_SHEET_TOOL_ID,
     "image.exact_duplicates",
     "agent.review",
     "report.render_markdown",
@@ -274,6 +297,7 @@ STATIC_AUDIT_V1_TOOL_IDS = (
     "source_data.profile",
     SOURCE_DATA_FINDINGS_TOOL_ID,
     SOURCE_DATA_PAIR_FORENSICS_TOOL_ID,
+    SOURCE_DATA_CROSS_SHEET_TOOL_ID,
     "image.exact_duplicates",
     "image.similarity_candidates",
     "agent.review",
@@ -394,6 +418,13 @@ def coerce_tool_params(tool_id: str, params: dict[str, Any]) -> dict[str, Any]:
         return {
             "max_distance": _bounded_int(params.get("max_distance", 8), "max_distance", 0, 32),
             "max_candidates": _bounded_int(params.get("max_candidates", 200), "max_candidates", 1, 1000),
+        }
+    if tool_id == SOURCE_DATA_CROSS_SHEET_TOOL_ID:
+        defaults = TOOLS[tool_id].parameter_defaults
+        return {
+            "min_overlap": _bounded_int(params.get("min_overlap", defaults["min_overlap"]), "min_overlap", 5, 50),
+            "min_support_rate": _bounded_float(params.get("min_support_rate", defaults["min_support_rate"]), "min_support_rate", 0.5, 1.0),
+            "max_findings": _bounded_int(params.get("max_findings", defaults["max_findings"]), "max_findings", 10, 200),
         }
     if tool_id == "source_data.profile":
         return {}
