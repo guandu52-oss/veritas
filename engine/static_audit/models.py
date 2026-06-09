@@ -109,6 +109,10 @@ class AgentTrace:
     detail: str = ""
     error: str | None = None
     metadata: dict[str, Any] = field(default_factory=dict)
+    # SHA-256 hex digests of input artifact files (keyed by artifact name).
+    # Used by run_agent_roles to invalidate cached outputs when upstream
+    # artifacts (e.g. agent_claim_extractor.json) have changed.
+    input_hashes: dict[str, str] = field(default_factory=dict)
 
 
 @dataclass

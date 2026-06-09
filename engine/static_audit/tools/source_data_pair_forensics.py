@@ -31,6 +31,16 @@ class PairForensicsParams:
     max_offset: int = 80
     max_findings_per_category: int = 50
     min_duplicate_row_width: int = 2
+    # Small-group detectors: biological replicates typically have n=3–6,
+    # far below the default min_pairs=8.  These parameters let us detect
+    # fixed arithmetic relationships, perfect duplicates, and cross-sheet
+    # decimal reuse in groups as small as 2–3 values.
+    min_small_group_size: int = 2
+    max_small_group_size: int = 7
+    min_decimal_match_length: int = 6
+    decimal_match_max_diff_places: int = 1
+    min_cross_sheet_fraction: float = 0.50
+    min_cross_sheet_matches: int = 6
 
 
 def risk_rank(value: str) -> int:
@@ -554,6 +564,458 @@ def row_offset_rounding_bias_findings(sheet: SheetVectors, params: PairForensics
     ]
 
 
+# ---------------------------------------------------------------------------
+# Small-group detectors (n = 2–7 biological replicates)
+# ---------------------------------------------------------------------------
+
+
+def _is_round_diff(diff: Decimal, max_places: int) -> bool:
+    """True when *diff* has ≤ *max_places* significant decimal places.
+
+    Examples (max_places=2):
+      0.40  → True   (2 places)
+      1.00  → True   (0 places after normalisation)
+      2.80  → True   (2 places)
+      0.09593023 → False (8 significant places)
+    """
+    if diff == 0:
+        return True
+    # Remove trailing zeros without changing the value
+    normalized = diff.normalize()
+    _, digits, exponent = normalized.as_tuple()
+    if digits == (0,):
+        return True
+    # Significant decimal places = -exponent
+    places = max(0, -exponent) if isinstance(exponent, int) else 0
+    return places <= max_places
+
+
+def _decimal_tail_match_len(a: Decimal, b: Decimal, *, max_digits: int = 12) -> int:
+    """Return N where the last N decimal digits of *a* and *b* are identical.
+
+    Both values are first quantized to *max_digits* decimal places to
+    neutralise IEEE-754 floating-point noise that leaks through XLSX XML
+    parsing (e.g. ``5.438083`` stored as ``5.4380829999999998``).
+    """
+    quant = Decimal(1).scaleb(-max_digits)
+    qa = a.quantize(quant)
+    qb = b.quantize(quant)
+    sa, sb = str(qa), str(qb)
+    if "." not in sa or "." not in sb:
+        return 0
+    da = sa.split(".")[1]
+    db = sb.split(".")[1]
+    n = 0
+    for ca, cb in zip(reversed(da), reversed(db)):
+        if ca != cb:
+            break
+        n += 1
+    return n
+
+
+def _is_small_group_column(values_by_row: dict[int, Decimal], params: PairForensicsParams) -> bool:
+    """True when the column is small enough for small-group detectors."""
+    return 2 <= len(values_by_row) <= params.max_small_group_size
+
+
+def small_group_fixed_relationship_findings(
+    sheet: SheetVectors, params: PairForensicsParams
+) -> list[dict[str, Any]]:
+    """Detect fixed arithmetic relationships (offsets / ratios) in small groups.
+
+    Biological replicates (n=3–6) are too small for the main row-offset
+    detectors (min_pairs=8).  This detector targets precisely those groups:
+    when 2–7 values in a column share a fixed intra-column offset or when
+    two columns are linked by a fixed arithmetic rule.
+    """
+    findings: list[dict[str, Any]] = []
+    small_cols = {
+        col: values
+        for col, values in sheet.numeric_columns.items()
+        if _is_small_group_column(values, params)
+    }
+    if not small_cols:
+        return findings
+
+    # --- within-column: same offset/ratio across multiple pairs ---
+    for col, values_by_row in sorted(small_cols.items()):
+        rows = sorted(values_by_row)
+        if len(rows) < params.min_small_group_size:
+            continue
+        row_values = [(r, values_by_row[r]) for r in rows]
+
+        # All pairwise diffs
+        diffs: Counter[Decimal] = Counter()
+        ratio_groups: dict[str, list[tuple[int, int, Decimal]]] = defaultdict(list)
+        for i in range(len(row_values)):
+            for j in range(i + 1, len(row_values)):
+                ri, vi = row_values[i]
+                rj, vj = row_values[j]
+                if vi == vj:
+                    continue
+                d = abs(vj - vi)
+                diffs[d] += 1
+                rk = ratio_key(vj, vi, params.ratio_places)
+                if rk is not None and rk != "1":
+                    ratio_groups[rk].append((ri, rj, d))
+
+        for diff_val, count in diffs.most_common(5):
+            if count < params.min_small_group_size:
+                break
+            risk = "high" if count >= 3 else "medium"
+            findings.append(
+                {
+                    "finding_id": None,
+                    "category": "small_group_fixed_relationship",
+                    "sub_category": "fixed_offset",
+                    "risk_level": risk,
+                    "confidence": "high" if count >= 3 else "medium",
+                    "workbook": sheet.workbook,
+                    "sheet": sheet.sheet,
+                    "column": col_to_name(col),
+                    "column_label": column_label(sheet, col),
+                    "relationship_value": str(diff_val.normalize()),
+                    "matched_pairs": count,
+                    "total_rows": len(rows),
+                    "values": [normalized_number(values_by_row[r]) for r in rows],
+                    "benign_explanations": [
+                        "当列代表独立生物学重复时，小样本组内的精确固定差异无法由测量误差解释。",
+                        "可能是数据衍生、公式生成或人工构造的信号。",
+                    ],
+                    "pressure_test_result": "needs_small_group_offset_review",
+                    "next_steps": [
+                        "确认该列值是否代表独立生物学重复或技术重复。",
+                        "要求原始仪器导出或实验记录验证值的独立性。",
+                    ],
+                }
+            )
+
+        # Ratio reuse
+        for ratio, pairs in ratio_groups.items():
+            if len(pairs) < params.min_small_group_size:
+                continue
+            risk = "high" if len(pairs) >= 3 else "medium"
+            findings.append(
+                {
+                    "finding_id": None,
+                    "category": "small_group_fixed_relationship",
+                    "sub_category": "fixed_ratio",
+                    "risk_level": risk,
+                    "confidence": "high" if len(pairs) >= 3 else "medium",
+                    "workbook": sheet.workbook,
+                    "sheet": sheet.sheet,
+                    "column": col_to_name(col),
+                    "column_label": column_label(sheet, col),
+                    "relationship_value": ratio,
+                    "matched_pairs": len(pairs),
+                    "total_rows": len(rows),
+                    "sample_pairs": [
+                        {
+                            "left_row": left,
+                            "right_row": right,
+                            "left": normalized_number(values_by_row[left]),
+                            "right": normalized_number(values_by_row[right]),
+                            "ratio": ratio,
+                        }
+                        for left, right, _diff in pairs[:10]
+                    ],
+                    "benign_explanations": [
+                        "当列代表独立生物学重复时，小样本组内的精确固定比例无法由测量误差解释。",
+                    ],
+                    "pressure_test_result": "needs_small_group_ratio_review",
+                    "next_steps": [
+                        "确认该比例是否来自已知归一化或换算公式。",
+                        "要求原始数据验证。",
+                    ],
+                }
+            )
+
+    # --- cross-column: fixed offset between two small columns ---
+    small_col_list = sorted(small_cols)
+    for ai in range(len(small_col_list)):
+        col_a = small_col_list[ai]
+        vals_a = small_cols[col_a]
+        rows_a = sorted(vals_a)
+        if len(rows_a) < params.min_small_group_size:
+            continue
+        for bi in range(ai + 1, len(small_col_list)):
+            col_b = small_col_list[bi]
+            vals_b = small_cols[col_b]
+            rows_b = sorted(vals_b)
+            if len(rows_b) != len(rows_a):
+                continue
+            # Map by row index position
+            diffs_ab = []
+            for (ra, va), (rb, vb) in zip(sorted(vals_a.items()), sorted(vals_b.items())):
+                if va != vb:
+                    diffs_ab.append(abs(vb - va))
+            if len(diffs_ab) < params.min_small_group_size:
+                continue
+            # Check if all diffs are the same
+            unique_diffs = set(diffs_ab)
+            if len(unique_diffs) == 1 and len(diffs_ab) >= params.min_small_group_size:
+                diff = diffs_ab[0]
+                risk = "high" if len(diffs_ab) >= 3 else "medium"
+                findings.append(
+                    {
+                        "finding_id": None,
+                        "category": "small_group_fixed_relationship",
+                        "sub_category": "cross_column_fixed_offset",
+                        "risk_level": risk,
+                        "confidence": "high",
+                        "workbook": sheet.workbook,
+                        "sheet": sheet.sheet,
+                        "columns": [col_to_name(col_a), col_to_name(col_b)],
+                        "column_labels": [column_label(sheet, col_a), column_label(sheet, col_b)],
+                        "relationship_value": str(diff.normalize()),
+                        "matched_pairs": len(diffs_ab),
+                        "sample_pairs": [
+                            {
+                                "col_a": col_to_name(col_a),
+                                "col_b": col_to_name(col_b),
+                                f"row_{ra}": normalized_number(va),
+                                f"row_{rb}": normalized_number(vb),
+                                "diff": str(diff.normalize()),
+                            }
+                            for (ra, va), (rb, vb) in list(zip(sorted(vals_a.items()), sorted(vals_b.items())))[:10]
+                        ],
+                        "benign_explanations": [
+                            "两列之间所有行对具有完全相同的差值，独立生物学测量中不可能出现。",
+                            "可能是数据复制粘贴、公式生成或批量填充的信号。",
+                        ],
+                        "pressure_test_result": "needs_cross_column_offset_review",
+                        "next_steps": [
+                            "验证两列是否代表独立的实验条件或组别。",
+                            "核对原始仪器输出确认各列值的独立性。",
+                        ],
+                    }
+                )
+
+    return sorted(findings, key=lambda item: (-risk_rank(item["risk_level"]), -item.get("matched_pairs", 0)))[
+        : params.max_findings_per_category
+    ]
+
+
+def perfect_duplicate_value_findings(
+    sheet: SheetVectors, params: PairForensicsParams
+) -> list[dict[str, Any]]:
+    """Detect identical numeric values that appear across all/most rows of a column.
+
+    In biological experiments, independent replicates always exhibit variation
+    (typically CV 5–20%).  A value appearing in every row of a column — or
+    dominating a column — is a strong signal of data fabrication.
+    """
+    findings: list[dict[str, Any]] = []
+    for col, values_by_row in sorted(sheet.numeric_columns.items()):
+        total = len(values_by_row)
+        if total < 3:
+            continue
+        if is_low_information_numeric_column(values_by_row, params):
+            continue
+        value_counts: Counter[Decimal] = Counter()
+        for v in values_by_row.values():
+            value_counts[normalized_number(v)] += 1
+
+        for value, count in value_counts.most_common(10):
+            if count < 3:
+                break
+            dominance = count / total
+            if count == total:
+                risk = "critical"
+                sub = "all_rows_identical"
+            elif dominance >= 0.5:
+                risk = "high"
+                sub = "majority_rows_identical"
+            else:
+                continue
+
+            findings.append(
+                {
+                    "finding_id": None,
+                    "category": "perfect_duplicate_values",
+                    "sub_category": sub,
+                    "risk_level": risk,
+                    "confidence": "high",
+                    "workbook": sheet.workbook,
+                    "sheet": sheet.sheet,
+                    "column": col_to_name(col),
+                    "column_label": column_label(sheet, col),
+                    "duplicate_value": value,
+                    "duplicate_count": count,
+                    "column_total": total,
+                    "dominance": round(dominance, 4),
+                    "benign_explanations": [
+                        "可能在极特殊情况下合法：常数值（如固定浓度）、全缺失填充标记、或技术噪声远小于展示精度。",
+                        "然而真正的生物学独立重复测量几乎一定有数值波动。",
+                    ],
+                    "pressure_test_result": "needs_perfect_duplicate_review",
+                    "next_steps": [
+                        f"确认该列是否代表 {total} 次独立生物学重复。",
+                        "如是独立重复，要求提供原始仪器导出或实验记录。",
+                        "核对论文中是否将相同值报道为不同样本的独立测量结果。",
+                    ],
+                }
+            )
+    return sorted(findings, key=lambda item: (-risk_rank(item["risk_level"]), -item.get("duplicate_count", 0)))[
+        : params.max_findings_per_category
+    ]
+
+
+def _build_suffix_index(
+    values: list[Decimal], min_match_len: int, max_digits: int = 12
+) -> defaultdict[str, list[Decimal]]:
+    """Build a hash index keyed by the last *min_match_len* fractional digits.
+
+    Two values that share at least *min_match_len* trailing decimal digits
+    must have the same suffix of length *min_match_len*, so they land in the
+    same bucket.  This reduces the cross-sheet match inner loop from O(n×m)
+    to O(n × avg_bucket_size).
+    """
+    index: defaultdict[str, list[Decimal]] = defaultdict(list)
+    quant = Decimal(1).scaleb(-max_digits)
+    for v in values:
+        sv = str(v.quantize(quant))
+        if "." not in sv:
+            continue
+        frac = sv.split(".")[1]
+        if len(frac) < min_match_len:
+            continue
+        suffix = frac[-min_match_len:]
+        index[suffix].append(v)
+    return index
+
+
+def cross_sheet_decimal_match_findings(
+    all_sheets: list[SheetVectors], params: PairForensicsParams
+) -> list[dict[str, Any]]:
+    """Detect sheets that share implausible decimal-tail patterns.
+
+    For each value in the *smaller* sheet, the detector finds the single
+    best-matching value in the other sheet (longest trailing-decimal match
+    with a round difference).  This caps matches at min(|A|,|B|) and avoids
+    the combinatorial explosion of O(n²) all-pairs comparison.
+
+    A suffix-hash index on the larger sheet reduces the inner loop from
+    O(n×m) to O(n × avg_bucket_size).
+    """
+    findings: list[dict[str, Any]] = []
+    if len(all_sheets) < 2:
+        return findings
+
+    # Pre-compute per-sheet value lists
+    sheet_data: dict[tuple[str, str], list[Decimal]] = {}
+    for sheet in all_sheets:
+        key = (sheet.workbook, sheet.sheet)
+        vals: list[Decimal] = []
+        for col, values_by_row in sheet.numeric_columns.items():
+            if is_low_information_numeric_column(values_by_row, params):
+                continue
+            vals.extend(values_by_row.values())
+        if vals:
+            sheet_data[key] = vals
+
+    sheet_keys = sorted(sheet_data)
+    for ai in range(len(sheet_keys)):
+        key_a = sheet_keys[ai]
+        vals_a = sheet_data[key_a]
+        for bi in range(ai + 1, len(sheet_keys)):
+            key_b = sheet_keys[bi]
+            vals_b = sheet_data[key_b]
+
+            # Let the smaller sheet drive the comparison
+            if len(vals_a) <= len(vals_b):
+                smaller_vals, larger_vals = vals_a, vals_b
+            else:
+                smaller_vals, larger_vals = vals_b, vals_a
+
+            # Build suffix index on the larger sheet for O(1) bucket lookup
+            suffix_index = _build_suffix_index(larger_vals, params.min_decimal_match_length)
+
+            matched: list[dict] = []
+            for v_small in smaller_vals:
+                best_n = 0
+                best_v: Decimal | None = None
+                best_diff: Decimal | None = None
+                # Get suffix for v_small to look up the correct bucket
+                sv_small = str(v_small.quantize(Decimal(1).scaleb(-12)))
+                if "." not in sv_small:
+                    continue
+                frac_small = sv_small.split(".")[1]
+                if len(frac_small) < params.min_decimal_match_length:
+                    continue
+                candidate_key = frac_small[-params.min_decimal_match_length:]
+                # Only compare against values in the same suffix bucket
+                for v_large in suffix_index.get(candidate_key, ()):
+                    if v_small == v_large:
+                        continue
+                    n = _decimal_tail_match_len(v_small, v_large)
+                    if n < params.min_decimal_match_length:
+                        continue
+                    d = abs(v_small - v_large)
+                    if not _is_round_diff(d, params.decimal_match_max_diff_places):
+                        continue
+                    if n > best_n:
+                        best_n = n
+                        best_v = v_large
+                        best_diff = d
+                if best_v is not None and best_diff is not None:
+                    matched.append({
+                        "sheet_a_value": normalized_number(v_small),
+                        "sheet_b_value": normalized_number(best_v),
+                        "decimal_match_length": best_n,
+                        "difference": str(best_diff.normalize()),
+                    })
+                elif v_small in set(larger_vals):
+                    # Exact duplicate across sheets — still counts even without
+                    # a round-diff match in the suffix bucket.
+                    pass
+
+            smaller_total = len(smaller_vals)
+            if smaller_total == 0:
+                continue
+            fraction = len(matched) / smaller_total
+            if fraction < params.min_cross_sheet_fraction:
+                continue
+            if len(matched) < params.min_cross_sheet_matches:
+                continue
+
+            max_len = max(m["decimal_match_length"] for m in matched)
+            round_count = sum(1 for m in matched if "." not in m["difference"] or len(m["difference"].split(".")[1]) <= 1)
+            risk = "critical" if max_len >= 6 and round_count >= 3 else (
+                "high" if max_len >= 6 else "medium"
+            )
+            findings.append({
+                "finding_id": None,
+                "category": "cross_sheet_decimal_match",
+                "risk_level": risk,
+                "confidence": "high" if max_len >= 8 else "medium",
+                "workbook_a": key_a[0],
+                "sheet_a": key_a[1],
+                "workbook_b": key_b[0],
+                "sheet_b": key_b[1],
+                "matched_pairs": len(matched),
+                "sheet_a_total": len(vals_a),
+                "sheet_b_total": len(vals_b),
+                "fraction": round(fraction, 4),
+                "max_decimal_match_length": max_len,
+                "sample_pairs": sorted(matched, key=lambda m: -m["decimal_match_length"])[:20],
+                "benign_explanations": [
+                    "两个不同实验系统的独立测量数据共享末位小数位是不正常的。",
+                    "如果差异是整数或有限位小数，则数据可能是从共同模板派生或人工生成的。",
+                ],
+                "pressure_test_result": "needs_cross_sheet_decimal_review",
+                "next_steps": [
+                    f"对比 {key_a[1]} 和 {key_b[1]} 对应的实验设计，确认是否为完全独立的实验系统。",
+                    "如是独立实验，跨图共享高精度末位小数无法用测量误差解释。",
+                    "要求提供两个实验的原始仪器导出或独立数据来源证明。",
+                ],
+            })
+
+    return sorted(findings, key=lambda item: (-risk_rank(item["risk_level"]), -item["matched_pairs"]))[
+        : params.max_findings_per_category
+    ]
+
+
 def assign_ids(findings: list[dict[str, Any]]) -> None:
     counters: Counter[str] = Counter()
     prefixes = {
@@ -564,6 +1026,9 @@ def assign_ids(findings: list[dict[str, Any]]) -> None:
         "long_format_paired_ratio_reuse": "LPR",
         "long_format_within_pair_ratio_enrichment": "LPE",
         "row_offset_partial_copy_rounding_bias": "RBR",
+        "small_group_fixed_relationship": "SGR",
+        "perfect_duplicate_values": "PDV",
+        "cross_sheet_decimal_match": "CSD",
     }
     for finding in findings:
         category = finding["category"]
@@ -579,6 +1044,9 @@ def analyze_xlsx_root(xlsx_root: Path, params: PairForensicsParams) -> dict[str,
     long_ratio_reuse = []
     long_ratio_enrichment = []
     rounding_bias = []
+    small_group_relationships = []
+    perfect_duplicates = []
+    all_sheets: list[SheetVectors] = []
     workbook_count = 0
     sheet_count = 0
     for workbook_path in sorted(xlsx_root.glob("*.xlsx")):
@@ -589,6 +1057,7 @@ def analyze_xlsx_root(xlsx_root: Path, params: PairForensicsParams) -> dict[str,
             errors.append({"workbook": workbook_path.name, "error": f"{type(exc).__name__}: {exc}"})
             continue
         sheet_count += len(sheets)
+        all_sheets.extend(sheets)
         for sheet in sheets:
             scalar_findings.extend(row_offset_scalar_findings(sheet, params))
             ratio_findings.extend(paired_ratio_reuse_findings(sheet, params))
@@ -596,6 +1065,11 @@ def analyze_xlsx_root(xlsx_root: Path, params: PairForensicsParams) -> dict[str,
             long_ratio_reuse.extend(long_format_paired_ratio_reuse_findings(sheet, params))
             long_ratio_enrichment.extend(long_format_within_pair_ratio_enrichment_findings(sheet, params))
             rounding_bias.extend(row_offset_rounding_bias_findings(sheet, params))
+            small_group_relationships.extend(small_group_fixed_relationship_findings(sheet, params))
+            perfect_duplicates.extend(perfect_duplicate_value_findings(sheet, params))
+
+    # Cross-sheet analysis — needs all sheets at once
+    cross_sheet_decimal = cross_sheet_decimal_match_findings(all_sheets, params)
 
     findings = [
         *scalar_findings,
@@ -604,11 +1078,77 @@ def analyze_xlsx_root(xlsx_root: Path, params: PairForensicsParams) -> dict[str,
         *long_ratio_reuse,
         *long_ratio_enrichment,
         *rounding_bias,
+        *small_group_relationships,
+        *perfect_duplicates,
+        *cross_sheet_decimal,
     ]
     findings = sorted(findings, key=lambda item: (-risk_rank(item["risk_level"]), str(item.get("workbook")), str(item.get("sheet"))))
     assign_ids(findings)
     priority_findings = [finding for finding in findings if risk_rank(finding.get("risk_level", "")) >= 2]
     by_category = Counter(finding["category"] for finding in findings)
+    # Generate hub-sheets summary for cross-sheet relationships
+    def generate_hub_sheets_summary(cross_sheet_findings: list[dict[str, Any]]):
+        if not cross_sheet_findings:
+            return []
+
+        # Build connected components
+        components = []
+        for finding in cross_sheet_findings:
+            node_a = (finding['workbook_a'], finding['sheet_a'])
+            node_b = (finding['workbook_b'], finding['sheet_b'])
+
+            comp_a = None
+            comp_b = None
+            for comp in components:
+                if node_a in comp:
+                    comp_a = comp
+                if node_b in comp:
+                    comp_b = comp
+                if comp_a and comp_b:
+                    break
+
+            if comp_a and comp_b:
+                if comp_a is not comp_b:
+                    comp_a.update(comp_b)
+                    components.remove(comp_b)
+            elif comp_a:
+                comp_a.add(node_b)
+            elif comp_b:
+                comp_b.add(node_a)
+            else:
+                components.append({node_a, node_b})
+
+        # For each component, find the hub node (highest degree)
+        hub_summaries = []
+        for comp in components:
+            if len(comp) <= 1:
+                continue
+
+            # Calculate degree within component
+            degrees = {node: 0 for node in comp}
+            for finding in cross_sheet_findings:
+                node_a = (finding['workbook_a'], finding['sheet_a'])
+                node_b = (finding['workbook_b'], finding['sheet_b'])
+                if node_a in comp and node_b in comp:
+                    degrees[node_a] += 1
+                    degrees[node_b] += 1
+
+            # Find hub node (highest degree)
+            hub_node, _ = max(degrees.items(), key=lambda x: x[1])
+            spoke_count = len(comp) - 1
+
+            # Format hub identifier (simplified for readability)
+            hub_identifier = f"{hub_node[0]}/{hub_node[1]}"
+            hub_summaries.append({
+                "hub_sheet": hub_identifier,
+                "spoke_sheet_count": spoke_count,
+                "spoke_sheets": [f"{n[0]}/{n[1]}" for n in comp if n != hub_node],
+                "findings_count": degrees[hub_node]
+            })
+        return hub_summaries
+
+    hub_sheets_summary = generate_hub_sheets_summary(cross_sheet_decimal)
+
     return {
         "schema_version": "1.0",
         "created_by": "engine/static_audit/tools/source_data_pair_forensics.py",
@@ -620,6 +1160,10 @@ def analyze_xlsx_root(xlsx_root: Path, params: PairForensicsParams) -> dict[str,
             "max_offset": params.max_offset,
             "max_findings_per_category": params.max_findings_per_category,
             "min_duplicate_row_width": params.min_duplicate_row_width,
+            "min_small_group_size": params.min_small_group_size,
+            "max_small_group_size": params.max_small_group_size,
+            "min_decimal_match_length": params.min_decimal_match_length,
+            "decimal_match_max_diff_places": params.decimal_match_max_diff_places,
         },
         "summary": {
             "workbook_count": workbook_count,
@@ -632,9 +1176,13 @@ def analyze_xlsx_root(xlsx_root: Path, params: PairForensicsParams) -> dict[str,
             "long_format_paired_ratio_reuse_findings": len(long_ratio_reuse),
             "long_format_within_pair_ratio_enrichment_findings": len(long_ratio_enrichment),
             "rounding_bias_findings": len(rounding_bias),
+            "small_group_fixed_relationship_findings": len(small_group_relationships),
+            "perfect_duplicate_value_findings": len(perfect_duplicates),
+            "cross_sheet_decimal_match_findings": len(cross_sheet_decimal),
             "by_category": dict(by_category),
             "errors": len(errors),
         },
+        "hub_sheets_summary": hub_sheets_summary,
         "findings": findings,
         "priority_findings": priority_findings,
         "row_offset_scalar_findings": scalar_findings,
@@ -643,12 +1191,18 @@ def analyze_xlsx_root(xlsx_root: Path, params: PairForensicsParams) -> dict[str,
         "long_format_paired_ratio_reuse_findings": long_ratio_reuse,
         "long_format_within_pair_ratio_enrichment_findings": long_ratio_enrichment,
         "rounding_bias_findings": rounding_bias,
+        "small_group_fixed_relationship_findings": small_group_relationships,
+        "perfect_duplicate_value_findings": perfect_duplicates,
+        "cross_sheet_decimal_match_findings": cross_sheet_decimal,
         "errors": errors,
         "limitations": [
             "该工具只识别 XLSX 中的通用行偏移、配对比例复用、long-format 成对比例复用和低宽度行重复模式，不判断最终科研诚信。",
             "行是否代表独立样本、患者或技术重复需要结合 sheet 注释、论文方法和原始仪器输出人工确认。",
             "ratio_places 会影响 paired ratio reuse 的敏感度；高精度与展示值四舍五入场景应分开解释。",
             "低信息数值列会被视为分组/类别/编号候选并排除在连续测量列检测之外，可能降低二分类测量场景的敏感度。",
+            "小样本组检测 (small_group/perfect_duplicate) 针对 2-7 行的生物学重复设计，高精度数值匹配下假阳性率较低。",
+            "跨 sheet 小数匹配检测 (cross_sheet_decimal_match) 仅比较不同 sheet 间的数值对，不判断 sheet 内部关系。",
+            "hub_sheets_summary 提供跨 sheet 复用关系的聚合视图，标识中心 hub sheet 和 spoke 数量。",
         ],
     }
 
@@ -663,6 +1217,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--max-offset", type=int, default=80)
     parser.add_argument("--max-findings-per-category", type=int, default=50)
     parser.add_argument("--min-duplicate-row-width", type=int, default=2)
+    parser.add_argument("--min-small-group-size", type=int, default=2, help="Minimum pairs for small-group fixed-relationship detection.")
+    parser.add_argument("--max-small-group-size", type=int, default=7, help="Columns with ≤ this many values are eligible for small-group detectors.")
+    parser.add_argument("--min-decimal-match-length", type=int, default=6, help="Minimum trailing decimal digits that must match in cross-sheet comparison.")
+    parser.add_argument("--decimal-match-max-diff-places", type=int, default=1, help="Max significant decimal places for a 'round' difference in cross-sheet matching.")
+    parser.add_argument("--min-cross-sheet-fraction", type=float, default=0.50, help="Minimum fraction of values that must match between two sheets to emit a cross-sheet finding.")
+    parser.add_argument("--min-cross-sheet-matches", type=int, default=6, help="Minimum number of matched value pairs required for a cross-sheet finding.")
     return parser.parse_args()
 
 
@@ -677,6 +1237,12 @@ def main() -> int:
         max_offset=max(1, args.max_offset),
         max_findings_per_category=max(1, args.max_findings_per_category),
         min_duplicate_row_width=max(2, args.min_duplicate_row_width),
+        min_small_group_size=max(2, args.min_small_group_size),
+        max_small_group_size=max(2, args.max_small_group_size),
+        min_decimal_match_length=max(2, args.min_decimal_match_length),
+        decimal_match_max_diff_places=max(0, args.decimal_match_max_diff_places),
+        min_cross_sheet_fraction=min(1.0, max(0.0, args.min_cross_sheet_fraction)),
+        min_cross_sheet_matches=max(2, args.min_cross_sheet_matches),
     )
     result = analyze_xlsx_root(xlsx_root, params)
     output.parent.mkdir(parents=True, exist_ok=True)

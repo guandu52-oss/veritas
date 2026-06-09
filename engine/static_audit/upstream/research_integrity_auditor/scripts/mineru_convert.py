@@ -8,9 +8,9 @@ from __future__ import annotations
 
 import argparse
 import json
-import http.client
 import os
 import pathlib
+import subprocess
 import sys
 import time
 import urllib.error
@@ -48,26 +48,54 @@ def request_json(method: str, url: str, token: str, payload: dict | None = None)
 
 
 def put_file(upload_url: str, file_path: pathlib.Path) -> None:
-    # urllib auto-adds "Content-Type: application/x-www-form-urlencoded" for
-    # requests with a body, which breaks OSS signed URLs from MinerU. Use
-    # http.client directly so the signed request has no Content-Type header.
-    parsed = urllib.parse.urlparse(upload_url)
-    body = file_path.read_bytes()
-    path = urllib.parse.urlunparse(("", "", parsed.path, parsed.params, parsed.query, ""))
-    connection_cls = http.client.HTTPSConnection if parsed.scheme == "https" else http.client.HTTPConnection
-    connection = connection_cls(parsed.netloc, timeout=300)
-    try:
-        connection.putrequest("PUT", path)
-        connection.putheader("Host", parsed.netloc)
-        connection.putheader("Content-Length", str(len(body)))
-        connection.endheaders(body)
-        response = connection.getresponse()
-        status = response.status
-        response_body = response.read().decode("utf-8", errors="replace")
-    finally:
-        connection.close()
+    # Python 3.9's http.client+SSL socket does not reliably propagate the
+    # timeout to the write side of the socket, which causes "socket.timeout"
+    # on large uploads.  Use curl --upload-file instead: it does a PUT
+    # without adding a Content-Type header, which is exactly what the OSS
+    # signed URL expects.
+    #
+    # Retry parameters tuned for slow cross-border uploads to Alibaba Cloud
+    # OSS Shanghai where 5 MB can take 15+ minutes at ~5 KB/s.  The -sS
+    # flag keeps progress bars silent while still forwarding error text.
+    proc = subprocess.run(
+        [
+            "curl",
+            "-sS",
+            "--retry", "3",
+            "--retry-delay", "30",
+            "--retry-max-time", "900",
+            "-X", "PUT",
+            "--upload-file", str(file_path),
+            "--connect-timeout", "60",
+            "--max-time", "1800",
+            "--write-out", "\n%{http_code}",
+            upload_url,
+        ],
+        capture_output=True,
+        timeout=1900,
+        text=True,
+    )
+    if proc.returncode != 0:
+        stderr_tail = proc.stderr.strip()[-500:] if proc.stderr.strip() else "(empty)"
+        raise RuntimeError(f"Upload curl failed (rc={proc.returncode}): {stderr_tail}")
+    output = proc.stdout.strip()
+    # Last line is the HTTP status code (from --write-out)
+    lines = output.rsplit("\n", 1)
+    if len(lines) == 2:
+        response_body = lines[0]
+        try:
+            status = int(lines[1].strip())
+        except ValueError:
+            raise RuntimeError(f"Upload failed, bad HTTP status: {output[:500]}")
+    else:
+        # Empty response body; output is just the status code
+        try:
+            status = int(lines[0].strip())
+            response_body = ""
+        except ValueError:
+            raise RuntimeError(f"Upload failed, bad HTTP status: {output[:500]}")
     if status < 200 or status >= 300:
-        raise RuntimeError(f"Upload failed with HTTP {status}: {response_body}")
+        raise RuntimeError(f"Upload failed with HTTP {status}: {response_body[:500]}")
 
 
 def download_file(url: str, target: pathlib.Path, attempts: int = 4) -> None:

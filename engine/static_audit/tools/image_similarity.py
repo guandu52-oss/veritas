@@ -19,7 +19,7 @@ def find_images(images_dir: Path) -> list[Path]:
 
 
 def hamming_distance(left: int, right: int) -> int:
-    return (left ^ right).bit_count()
+    return bin(left ^ right).count("1")
 
 
 def dhash(path: Path, hash_size: int = 8) -> int:

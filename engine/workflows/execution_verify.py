@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 from pathlib import Path
 import secrets
 
@@ -213,7 +213,7 @@ def run_verification(manifest_path: str | Path, role: str = "author") -> Verific
 
     return VerificationReport(
         report_id=_report_id(),
-        generated_at=datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        generated_at=datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
         project_name=project.get("name", "Unnamed Project"),
         verification_level=verification_level,
         overall_status=overall_status,
@@ -272,7 +272,7 @@ def _overall_status(findings: list[Finding]) -> str:
 
 
 def _report_id() -> str:
-    stamp = datetime.now(UTC).strftime("%Y%m%d")
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%d")
     return f"VRT-{stamp}-{secrets.token_hex(3).upper()}"
 
 

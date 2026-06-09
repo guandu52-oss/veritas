@@ -47,6 +47,8 @@ from engine.static_audit.tools.paperfraud_rules import (  # noqa: E402
     paperfraud_findings_from_matches,
     run_paperfraud_rule_match,
 )
+import hashlib  # noqa: E402
+
 from engine.static_audit.roles import ROLE_DEFINITIONS, RoleDefinition, skipped_trace  # noqa: E402
 from engine.investigation.opencode_agent import (  # noqa: E402
     DEFAULT_SOURCE_FINDING_PARAMS,
@@ -59,6 +61,71 @@ from engine.investigation.opencode_agent import (  # noqa: E402
     run_agent_role,
     write_agent_result,
 )
+
+
+def _compute_input_hashes(workdir: Path, artifacts: tuple[str, ...]) -> dict[str, str]:
+    """Return SHA-256 hex hashes for each artifact in *artifacts* found under *workdir*.
+
+    An artifact listed as ``"full.md"`` is resolved as a single file.
+    An artifact listed as ``"images/"`` (trailing slash) matches a directory
+    — all files directly under that directory are hashed individually and
+    the resulting ordered hex string is salted into a single summary hash.
+    Artifacts that do not exist on disk receive hash ``"<missing>"``.
+    """
+    result: dict[str, str] = {}
+    for name in artifacts:
+        path = workdir / name
+        if name.endswith("/"):
+            # Directory artifact — hash its children
+            if path.is_dir():
+                child_hashes = []
+                for child in sorted(path.iterdir()):
+                    if child.is_file():
+                        child_hashes.append(_sha256_file(child))
+                result[name] = _sha256_str("".join(child_hashes))
+            else:
+                result[name] = "<missing>"
+        else:
+            result[name] = _sha256_file(path) if path.is_file() else "<missing>"
+    return result
+
+
+def _sha256_file(path: Path) -> str:
+    """Hex digest of a single file."""
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def _sha256_str(value: str) -> str:
+    """Hex digest of a string."""
+    return hashlib.sha256(value.encode()).hexdigest()
+
+
+def _input_hashes_match(stored: dict[str, str], computed: dict[str, str]) -> bool:
+    """True when *computed* matches *stored* for every key present in *stored*.
+
+    A missing key in *stored* (legacy trace) is treated as matching.
+    """
+    if not stored:
+        return False  # no hashes stored → cannot verify; force rerun
+    for key, expected in stored.items():
+        if computed.get(key) != expected:
+            return False
+    return True
+
+
+def _upstream_fresh(output_path: Path, upstream_paths: list[Path]) -> bool:
+    """True when *output_path* is newer than every *upstream_path*.
+
+    Used as a lightweight cache-invalidation check for simple agent outputs
+    (material_plan, review) that don't have formal RoleDefinition traces.
+    """
+    if not output_path.exists():
+        return False
+    out_mtime = output_path.stat().st_mtime
+    for upstream in upstream_paths:
+        if upstream.is_file() and upstream.stat().st_mtime > out_mtime:
+            return False
+    return True
 from engine.tools.registry import (  # noqa: E402
     IMAGE_SIMILARITY_TOOL_ID,
     PAPER_STATIC_AUDIT_TOOL_IDS,
@@ -1874,11 +1941,13 @@ def run_agent_roles(
         output_path = workdir / role.output_artifact
         trace_path = workdir / "agent_traces" / f"{role.role_id}.json"
         existing_trace = read_agent_trace(trace_path)
+        current_hashes = _compute_input_hashes(workdir, role.input_artifacts)
         if (
             not force
             and output_path.exists()
             and existing_trace is not None
             and existing_trace.status in {"ran", "skipped"}
+            and _input_hashes_match(existing_trace.input_hashes, current_hashes)
         ):
             role_manifest.append(
                 {
@@ -1896,11 +1965,24 @@ def run_agent_roles(
                         f"agent_role_{role.role_id}",
                         f"opencode Agent role: {role.title}",
                         "reused",
-                        "Existing successful role output and trace found.",
+                        "Existing successful role output and trace found (input hashes unchanged).",
                     ),
                     progress,
                 )
             continue
+        elif existing_trace is not None and existing_trace.status == "ran" and not _input_hashes_match(existing_trace.input_hashes or {}, current_hashes):
+            # Trace exists but inputs changed — invalidate and re-run
+            if role.real_in_v1:
+                record_step(
+                    steps,
+                    StepResult(
+                        f"agent_role_{role.role_id}",
+                        f"opencode Agent role: {role.title}",
+                        "cached_stale",
+                        "Input artifacts changed since last run; will re-compute.",
+                    ),
+                    progress,
+                )
         if not role.real_in_v1:
             trace = skipped_trace(role, "Role schema reserved; not executed in static_audit_protocol.v1.")
             trace.output_path = str(output_path)
@@ -1944,7 +2026,7 @@ def run_agent_roles(
             max_retries=max_retries,
         )
         payload = write_role_agent_result(output_path, role, case_id, result)
-        trace = trace_from_role_result(role, output_path, result, payload, model)
+        trace = trace_from_role_result(role, output_path, result, payload, model, current_hashes)
         write_role_trace(workdir, trace)
         metadata = result_metadata(result, output_path)
         metadata["role_id"] = role.role_id
@@ -1983,12 +2065,14 @@ def trace_from_role_result(
     result: AgentRunResult,
     payload: dict[str, Any],
     model: str,
+    input_hashes: dict[str, str] | None = None,
 ) -> AgentTrace:
     status = "ran" if result.status == "ok" else "failed"
     return AgentTrace(
         role_id=role.role_id,
         status=status,  # type: ignore[arg-type]
         input_artifacts=list(role.input_artifacts),
+        input_hashes=input_hashes or {},
         output_path=str(output_path),
         output_summary=role_output_summary(role.role_id, payload),
         model=model,
@@ -2170,7 +2254,7 @@ def _run_static_audit_from_args(
     }
 
     agent_material_plan_path = workdir / "agent_material_plan.json"
-    if agent_material_plan_path.exists() and not args.force:
+    if agent_material_plan_path.exists() and not args.force and _upstream_fresh(agent_material_plan_path, [material_inventory_path]):
         material_plan = read_json(agent_material_plan_path) or material_plan_from_inventory(
             case_id=case_id,
             inventory=material_inventory,
@@ -2555,10 +2639,23 @@ def _run_static_audit_from_args(
 
     if args.agent_mode in {"review", "full"}:
         agent_review_path = workdir / "agent_review.json"
-        if agent_review_path.exists() and not args.force:
+        # Agent review depends on deterministic forensics artifacts; re-run
+        # if any of them are newer than the cached review output.
+        review_upstream = [
+            p for p in [
+                workdir / "source_data_pair_forensics.json",
+                workdir / "source_data_findings.json",
+                workdir / "source_data_profile.json",
+                workdir / "numeric_forensics.json",
+                workdir / "exact_image_duplicates.json",
+                workdir / "investigation_rounds.jsonl",
+            ]
+            if p.exists()
+        ]
+        if agent_review_path.exists() and not args.force and _upstream_fresh(agent_review_path, review_upstream + [material_inventory_path]):
             agent_manifest["review"] = {
                 "status": "reused",
-                "detail": "Existing agent_review.json found.",
+                "detail": "Existing agent_review.json found (upstream artifacts unchanged).",
                 "runtime_seconds": None,
                 "retries": 0,
                 "command": [],
