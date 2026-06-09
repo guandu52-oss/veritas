@@ -1,8 +1,15 @@
 # Veritas
 
-Veritas 是一个面向干实验论文 claim 的执行型技术复核原型。
+**Veritas 是一个实验室内部论文风控工具（当前聚焦干实验论文子集），帮助导师（通讯作者）在投稿前主动发现学生数据中的问题，填补监管真空，避免背锅。**
 
-它不是普通静态论文审查工具。当前核心差异化是：系统不仅阅读论文，还要尽量把论文 claim 对应到 PDF 解析结果、Source Data、代码、环境、执行日志和结果文件，并生成可复查的技术核查报告。
+**核心动机**：问题论文频发，导师由于脱离科研一线，导致监管真空，导师本人并不知情，无法核实数据真伪。
+
+**核心价值**：
+- Source Data 内部一致性检测（重复列、固定关系、数值异常）
+- 图像操控检测（copy-move、伪造区域、跨图重复）
+- Claim-to-source-data 映射（论文与数据不符的发现）
+
+**问题分层**：所有 finding 按 `consistency`（一致性，最严重）> `matching`（匹配性）> `completeness`（完整性，材料缺失）分层，帮助导师判断优先级。
 
 当前仓库仍以 `audit-paper` 审查闭环为核心，但已开始补 Web P1：在浏览器里创建 case、上传输入、启动与 CLI 等价的审查、观察进度并打开最终 HTML 报告。
 
@@ -10,19 +17,20 @@ Veritas 是一个面向干实验论文 claim 的执行型技术复核原型。
 
 MVP 聚焦：
 
-- Python/R 医学生信与生物医药干实验论文。
-- 投稿前技术复核，而不是学术价值评价。
-- 服务式流程：用户提交材料，我们代跑。
-- CLI-first，同时提供 Web P1 工作台用于内测 happy path。
-- opencode Agent 编排不确定推断，确定性脚本负责可重复检查。
+- **干实验论文**：Python/R 医学生信与生物医药干实验论文（不泛化到湿实验、临床试验等）
+- 投稿前技术复核，而不是学术价值评价
+- 服务式流程：用户提交材料，我们代跑
+- CLI-first，同时提供 Web P1 工作台用于内测 happy path
+- opencode Agent 编排不确定推断，确定性脚本负责可重复检查
 
 当前明确不做：
 
-- 最终科研诚信判定。
-- 自动修改论文、Source Data 或代码。
-- 自动提交 patch。
-- 完整 SaaS 任务系统和多租户运营后台。
-- 远程 worker 集群。
+- 最终科研诚信判定
+- 自动修改论文、Source Data 或代码
+- 自动提交 patch
+- 完整 SaaS 任务系统和多租户运营后台
+- 远程 worker 集群
+- 湿实验、临床试验、材料科学等非干实验论文（后续再泛化）
 
 ## 当前内测增强方向
 
@@ -68,7 +76,9 @@ third_party/  外部参考仓库，以 git submodule 管理
 - `web/frontend/node_modules/`：前端依赖。
 - `.env`：本地密钥。
 
-## audit-paper 数据流
+## audit-paper 数据流 / Data Flow
+
+The following diagram traces the full `audit-paper` pipeline from raw paper input to final report generation. Each box is a pipeline stage; arrows show data dependencies and artifact outputs written to the workdir.
 
 ```text
 paper_dir
@@ -195,7 +205,9 @@ selected optional lanes + paper_pdf + workdir + env
   +-- agent_traces/
 ```
 
-## audit-paper 状态机
+## audit-paper 状态机 / State Machine
+
+The state machine below governs the step-by-step execution order of `audit-paper`. Each node represents a pipeline stage; transitions depend on agent mode, artifact availability, and command exit codes.
 
 ```text
 START
@@ -323,17 +335,49 @@ WRITE_MANIFEST
   +-- no failed steps  -> EXIT 0
 ```
 
-状态含义：
+状态含义 / Step status values：
 
-- `ran`：本轮真实执行成功。
-- `reused`：目标产物已存在且未指定 `--force`。
-- `skipped`：前置材料或能力缺失，跳过但不视为失败。
-- `warning`：Agent 失败或输出不合规，降级继续确定性报告。
-- `failed`：确定性命令失败或预期产物缺失，最终进程返回 1。
+- `ran`：本轮真实执行成功。/ Genuinely executed and succeeded in this run.
+- `reused`：目标产物已存在且未指定 `--force`。/ Target artifact already exists and `--force` was not specified.
+- `skipped`：前置材料或能力缺失，跳过但不视为失败。/ Prerequisite material or capability missing — skipped but not treated as a failure.
+- `warning`：Agent 失败或输出不合规，降级继续确定性报告。/ Agent failed or produced non-compliant output — degraded gracefully, deterministic reporting continues.
+- `failed`：确定性命令失败或预期产物缺失，最终进程返回 1。/ Deterministic command failed or expected artifact is missing — final process exits with code 1.
 
 当前 `audit-paper` 的真实 Agent role 层顺序执行 3 个角色：`ClaimExtractor`、`SourceDataAuditor`、`JudgeAgent`。其余 role 先写入 `skipped` trace，占位给后续并行 subagent 和视觉/数字/数学/领域复核扩展。
 
+The Agent role layer in `audit-paper` currently executes three roles in sequence: `ClaimExtractor`, `SourceDataAuditor`, and `JudgeAgent`. Remaining roles are written as `skipped` traces for now, reserving slots for future parallel sub-agents and visual, numerical, mathematical, and domain-specific review extensions.
+
 `final_audit_report.html` 是当前老板 demo 的优先展示形态：单文件静态 HTML，突出本 case 结论、Top-N priority findings、证据定位、良性解释、人工复核动作和 role trace。Markdown 报告继续保留作为兼容输出。
+
+`final_audit_report.html` is the primary deliverable for executive demos: a self-contained static HTML file that highlights the case verdict, Top-N priority findings, evidence anchoring, benign explanations, manual review actions, and role traces. The Markdown report is retained as a compatible fallback output.
+
+## Web P1 数据层（web_data/）
+
+`web_data/` 是 Web P1 工作台的 file-based 状态存储，由 `CaseStore` 管理，不依赖任何外部数据库。它与 `outputs/`（审计引擎产物目录）是两个独立的概念：
+
+```text
+web_data/
+└── cases/
+    └── <case_id>/
+        ├── case.json        # CaseRecord：标题、状态、输入文件计数、最新 run_id
+        ├── inputs/          # 用户上传的论文 PDF 和 source data 文件
+        └── runs/
+            └── <run_id>/
+                ├── run.json       # AuditRunRecord：状态、agent_mode、workdir 路径
+                └── events.jsonl   # 运行事件流（进度、日志，前端可轮询）
+```
+
+数据流关系：
+
+| 前端操作 | API | 写入位置 |
+|---|---|---|
+| 创建 case | `POST /api/cases` | `web_data/cases/<id>/case.json` |
+| 上传输入 | `POST /api/cases/<id>/inputs` | `web_data/cases/<id>/inputs/` |
+| 启动审查 | `POST /api/cases/<id>/runs` | `web_data/cases/<id>/runs/<id>/run.json` |
+| 查看产物 | `GET /api/cases/<id>/artifacts` | 读取 `outputs/`（通过 `run.workdir` 桥接） |
+| 查看报告 | `GET /api/cases/<id>/report/html` | 读取 `outputs/<case_id>/.../final_audit_report.html` |
+
+两者通过 `AuditRunRecord.workdir` 字段桥接：`web_data/` 记录"哪个 case 触发了哪次 run"，`outputs/` 存放"这次 run 产出了什么"。
 
 ## 常用命令
 
@@ -375,10 +419,17 @@ PYTHONPATH=. python3 cli/main.py audit-paper <paper_dir> --case-id <case_id> --a
 PYTHONPATH=. python3 cli/main.py audit-paper <paper_dir> --case-id <case_id> --fresh --force --agent-mode review --progress plain
 ```
 
-启动 Web P1 后端：
+启动 Web P1 后端（默认监听 `127.0.0.1:8765`）：
 
 ```bash
 PYTHONPATH=. python3 -m web.backend.veritas_web.app
+```
+
+如果遇到 `OSError: [Errno 98] Address already in use`，说明有旧进程仍占用 8765 端口：
+
+```bash
+lsof -i :8765        # 找到占用进程的 PID
+kill <PID>           # 终止旧进程后重新启动
 ```
 
 启动 Web P1 前端：

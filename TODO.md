@@ -2,6 +2,24 @@
 
 更新时间：2026-05-29
 
+## 产品定位（最新）
+
+**Veritas 是一个实验室内部论文风控工具（当前聚焦干实验论文子集），帮助导师（通讯作者）在投稿前主动发现学生数据中的问题，填补监管真空，避免背锅。**
+
+**核心动机**：问题论文频发，导师由于脱离科研一线，导致监管真空，导师本人并不知情，无法核实数据真伪。
+
+**核心价值**：
+- Source Data 内部一致性检测（重复列、固定关系、数值异常）
+- 图像操控检测（copy-move、伪造区域、跨图重复）
+- Claim-to-source-data 映射（论文与数据不符的发现）
+
+**问题分层（Issue Categories）**：所有 finding 按 `consistency`（一致性，最严重）> `matching`（匹配性）> `completeness`（完整性，材料缺失）分层，帮助导师判断优先级。
+
+- 材料缺失检测保留作为 completeness issue（监管真空的信号）
+- 代码执行审查未接入保留作为 completeness issue（可验证性缺失）
+
+**当前范围**：干实验论文（Python/R 医学生信与生物医药），暂不泛化到湿实验、临床试验等。
+
 ## 当前目标
 
 把 `audit-paper` 从单 case 验证推进到可泛化的静态审查 demo，并把 Agent 从后置 reviewer 升级为受控的 investigation planner。
@@ -17,6 +35,7 @@
 - 报告展示 Top-N priority findings，不假设某个 case 固定只有 3 个发现。
 - 不在运行代码、常驻方法论或默认配置里写入具体论文标题、文件名前缀、图号、finding id 或 claim 文本。
 - ELIS-style 重型图像取证能力可以进入内测 happy path，但必须保留失败隔离、超时、artifact provenance 和人工复核入口。
+- **报告按 issue_category 分层呈现**：高危发现（consistency）→ 匹配问题（matching）→ 完整性问题（completeness）。
 
 ## 已完成
 
@@ -86,6 +105,41 @@ P0 最小闭环已完成。以下 4 项仍需补齐：
 2. **Pydantic schema 升级**：把当前轻量 validator 升级为 Pydantic schema，保持"校验失败 -> 反馈 Agent 重试 -> 仍失败则 fallback"的语义。
 3. **Planner prompt 优化**：进一步优化 AgentInvestigationPlanner prompt，让其更稳定地区分"补充调查"与"重复 baseline"。
 4. **Planner fixture-based eval**：为 `AgentInvestigationPlanner` 增加真实 fixture-based eval，验证它能在已有 artifacts 上选择合理工具，并拒绝重复、缺依赖、越权 Agent tool。
+
+### P0 产品层改进：问题分层与报告呈现
+
+**背景**：根据 leader 反馈，Veritas 的核心场景是"实验室内部风控工具，帮助导师在投稿前主动发现学生数据中的问题"。当前报告把所有 finding 混在一起，导师难以判断优先级。
+
+**目标**：将所有 finding 按 `issue_category` 分层，帮助导师快速定位最严重的问题。
+
+**分层定义**：
+
+| 类别 | 含义 | 示例 | 典型风险级别 |
+|---|---|---|---|
+| **consistency**（一致性） | 数据内部矛盾，可能造假信号 | 重复列、固定关系、图像 copy-move | high/critical |
+| **matching**（匹配性） | 论文与数据不符，claim 无法支撑 | 数值不一致、图表对不上 | medium/high |
+| **completeness**（完整性） | 监管真空，学生未提交该有的东西 | 缺 Source Data、缺代码、缺环境文件 | low/medium |
+
+**优先级**：consistency > matching > completeness
+
+**实施计划**：
+
+1. **数据模型扩展**：在 `engine/static_audit/models.py` 的 `Finding` dataclass 中新增 `issue_category: Literal["consistency", "matching", "completeness"]` 字段。
+2. **工具输出适配**：
+   - `source_data_findings.py` 和 `source_data_pair_forensics.py` 的输出自动标记为 `consistency`
+   - `agent_review` 和 role layer 的输出由 Agent 标记 category
+   - 材料缺失检测（`missing_materials`）和 execution status 标记为 `completeness`
+3. **报告呈现重构**：`engine/static_audit/html_report.py` 按 category 分层呈现：
+   - 🚨 高危发现（Consistency Issues）
+   - ⚠️ 匹配问题（Matching Issues）
+   - ℹ️ 完整性问题（Completeness Issues）
+4. **建议行动**：每个 finding 给出明确的"建议行动"（如"立即要求学生解释"、"核对计算过程"、"要求学生提交代码"）。
+
+**验收标准**：
+
+- 对一个真实 case，HTML 报告能按 consistency / matching / completeness 分层展示 findings。
+- 每个 finding 都有明确的 `issue_category` 和"建议行动"。
+- 材料缺失和 execution status 作为 completeness issue 呈现，而不是放在"方法论"或"当前限制"章节。
 
 ### P1: 扩展静态审查 Tool Registry 和泛化验收
 
