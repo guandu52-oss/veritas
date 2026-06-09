@@ -20,6 +20,7 @@ EvidenceKind = Literal[
 ]
 
 RiskLevel = Literal["info", "low", "medium", "high", "critical"]
+IssueCategory = Literal["consistency", "matching", "completeness"]
 Status = Literal[
     "pending",
     "ran",
@@ -64,6 +65,7 @@ class Finding:
     category: str
     risk_level: RiskLevel
     summary: str
+    issue_category: IssueCategory = "consistency"
     evidence_refs: list[str] = field(default_factory=list)
     claim_refs: list[str] = field(default_factory=list)
     benign_explanations: list[str] = field(default_factory=list)

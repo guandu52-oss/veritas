@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from dataclasses import asdict
 
 from engine.static_audit.models import (
     AgentTrace,
@@ -96,3 +97,36 @@ def test_roles_include_three_real_v1_roles_and_skipped_trace() -> None:
     trace = skipped_trace(ROLE_DEFINITIONS[2])
     assert trace.role_id == "visual_triage"
     assert trace.status == "skipped"
+
+
+def test_finding_has_issue_category_with_default_consistency() -> None:
+    finding = Finding(
+        finding_id="FD-001",
+        category="fixed_difference",
+        risk_level="medium",
+        summary="test",
+    )
+    assert finding.issue_category == "consistency"
+
+
+def test_finding_accepts_completeness_issue_category() -> None:
+    finding = Finding(
+        finding_id="COMP-001",
+        category="material_missing",
+        risk_level="medium",
+        summary="test",
+        issue_category="completeness",
+    )
+    assert finding.issue_category == "completeness"
+
+
+def test_finding_serializes_issue_category() -> None:
+    finding = Finding(
+        finding_id="COMP-001",
+        category="material_missing",
+        risk_level="medium",
+        summary="test",
+        issue_category="completeness",
+    )
+    data = asdict(finding)
+    assert data["issue_category"] == "completeness"
