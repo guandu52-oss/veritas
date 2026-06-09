@@ -1525,6 +1525,39 @@ def build_static_audit_bundle(
     evidence_items = collect_evidence_items(workdir)
     claims, claim_mappings, findings = collect_claims_and_findings(workdir, evidence_items)
     traces = collect_agent_traces(workdir, agent_manifest)
+
+    material_plan = read_json(workdir / "agent_material_plan.json") or {}
+    if material_plan.get("missing_materials"):
+        findings.append(
+            Finding(
+                finding_id="COMP-MAT-001",
+                category="material_missing",
+                risk_level="medium",
+                summary=f"提交材料缺少: {', '.join(material_plan['missing_materials'])}",
+                issue_category="completeness",
+                metadata={
+                    "missing_items": material_plan["missing_materials"],
+                    "material_plan_status": material_plan.get("status"),
+                },
+            )
+        )
+
+    execution_status = ExecutionStatus(status="not_provided")
+    if execution_status.status in {"not_provided", "not_run", "missing_material"}:
+        findings.append(
+            Finding(
+                finding_id="COMP-EXEC-001",
+                category="execution_status_not_available",
+                risk_level="low",
+                summary=f"代码执行审查未连接: execution_status={execution_status.status}",
+                issue_category="completeness",
+                metadata={
+                    "execution_status": execution_status.status,
+                    "runtime_backend": execution_status.runtime_backend,
+                },
+            )
+        )
+
     return StaticAuditBundle(
         case_id=case_id,
         inputs={
@@ -2495,6 +2528,7 @@ def _run_static_audit_from_args(
         record_step(steps, StepResult("source_data_profile", "Source Data profile", "skipped", source_skip_detail), progress)
         record_step(steps, StepResult("source_data_findings", "Source Data findings", "skipped", source_skip_detail), progress)
         record_step(steps, StepResult("source_data_pair_forensics", "Source Data pair forensics", "skipped", source_skip_detail), progress)
+        record_step(steps, StepResult("source_data_cross_sheet", "Source Data cross-sheet duplicates", "skipped", source_skip_detail), progress)
 
     images_dir = workdir / "images"
     if images_dir.is_dir():
