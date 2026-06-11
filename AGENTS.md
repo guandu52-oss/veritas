@@ -57,8 +57,8 @@
 ### 当前能力边界（诚实声明）
 
 - **材料缺失检测**：保留作为 completeness issue，是监管真空的信号（"学生没提交 Source Data → 可能数据不存在、被篡改、或学生在隐瞒"）
-- **代码执行审查**：当前未接入 runtime，标记为 `execution_status: not_provided`，作为 completeness issue（"无法验证数据是否可复现"）
 - **代码/环境文件**：PI 可以直接让学生补充，但系统仍然标记"未提供"作为完整性问题
+- **代码执行审查**：`precheck` / `run` / `report` 和 `runtime/subprocess` 已有基础能力；但 `audit-paper` happy path 仍以静态证据、Source Data 和 Agent 结构化复核为主，claim-to-code/runtime replay 还不是稳定主链路。缺少代码、环境或结果文件时，仍按 `execution_status: not_provided`、`skipped` 或 completeness issue 呈现，不伪造成已验证复现。
 
 ### 工程约束
 
@@ -99,8 +99,8 @@ MVP 聚焦：
 -> opencode AgentInvestigationPlanner 基于已生成 artifacts 选择最多 3 轮后续确定性调查工具
 -> opencode agent_review 读取结构化产物做 claim/finding 复核
 -> opencode role layer 顺序执行 ClaimExtractor / SourceDataAuditor / JudgeAgent
--> 产出结构化证据草案和 Markdown 报告
--> 再决定 runtime / report 的下一步实现
+-> 产出结构化证据草案和 Markdown/HTML 报告
+-> 再把 runtime / claim-to-code verification 纳入更稳定的 happy path
 ```
 
 补充约束：PDF 解析、evidence ledger、numeric forensics、exact image duplicate 属于论文输入后的固定静态链路；image similarity 属于 Agent-selectable optional investigation tool。Source Data 不再假设一定存在或一定是 CSV/XLSX。当前实现先写 `material_inventory.json`，再由 `agent_material_plan` 或确定性 fallback 选择 optional evidence lane；只有被 Tool Registry 支持且根目录合法的 lane 才能进入执行。
@@ -181,20 +181,168 @@ veritas.yml / veritas.json
 
 - `configs/opencode/README.md`
 
+## 工程推进方法论
+
+本节用于让后续 Agent 更快、更稳地推进当前项目。它补充本文件中的产品边界、Evidence First、Tool Registry 和 Agent 边界；如有冲突，以 Veritas 的产品边界和结构化证据约束为准。
+
+### 工作判断
+
+- 接到任务后，先用一句话确认真实目标和成功标准；只有当目标、成功标准或破坏面无法从仓库上下文判断时，才停下来问一个关键问题。
+- 每项改动都要服务明确目标：P0 是 `audit-paper` happy path 能稳定走通并产出结构化证据和报告；P1 是视觉取证、Web P1、可靠性和关键差异化；P2 是打磨、性能、可观测性和非核心增强；不服务当前目标的默认不做。
+- 如果 P0 仍不稳定，优先砍掉增强项，回到最短可验证闭环。
+- 优先选择更简单、更直接的实现路径；不要为假想未来增加抽象层、插件化、配置化或策略框架。
+- 每一行修改都应能追溯到当前目标；不要顺手重构无关模块。
+
+### 业务模型先于实现模型
+
+先把问题翻译成 Veritas 的业务主体和事实，再决定代码结构。常用主体包括：
+
+- case、paper、submitted material、Source Data、code/environment、claim、evidence event、tool action、finding、manual review task、audit run、report。
+
+建模时必须明确：
+
+- 哪个主体被创建、改变或终止。
+- 哪些不变量必须成立，例如 finding 必须回指结构化 evidence、Agent 不得绕过 Tool Registry、报告不得直接从自然语言总结生成。
+- 哪个文件或契约是事实源，例如 `engine/tools/registry.py`、`static_audit_bundle.json`、`audit_run_manifest.json`、`configs/methodology/` 或具体 schema/test fixture。
+
+实现模型只能服务业务模型，不能为了实现方便新增模糊概念。新增 issue category、evidence type、tool_id、run status 或 report field 时，先确认它是否属于现有模型；能复用现有语义就不要新增。
+
+### 分层与依赖
+
+默认按以下单向边界理解系统；配置、schema 和类型契约是横向事实源，不是另一套流程入口：
+
+```text
+Config / Schema / Type contract
+
+Web / CLI / API
+  ↓
+Orchestrator / Workflow
+  ↓
+Domain / Evidence / Claim / Finding model
+  ↓
+Tool Registry / Runtime / Adapter
+  ↓
+Third-party toolbox / external service
+```
+
+落到仓库中：
+
+- `web/` 和 `cli/` 处理输入输出、展示和协议边界，不放审查规则。
+- `engine/static_audit/` 负责编排、schema、role、报告和 first-party 静态审查内核。
+- `engine/tools/registry.py` 是 deterministic tool、tool_id、参数边界和输出契约的 source of truth。
+- `runtime/` 负责命令执行、证据记录和副作用隔离，不承载 Agent 推理。
+- `configs/methodology/` 承载领域方法论，Prompt/skill 只引用和路由，不复制成第二套事实源。
+- `third_party/` 是能力吸收区，进入主链路前必须通过 adapter/tool 包装。
+
+禁止上层直接跳过 registry/runtime 调第三方工具，禁止把业务规则散落在 UI、脚本、Prompt 或报告模板里。确实需要跨层时，先调整边界和契约。
+
+### 契约与数据流
+
+核心功能必须能画出数据流：
+
+```text
+输入材料
+  ↓
+材料清单 / 校验
+  ↓
+确定性工具或 Agent 受控选择
+  ↓
+结构化 artifacts
+  ↓
+static_audit_bundle / manifest
+  ↓
+Markdown / HTML report
+  ↓
+人工复核任务
+```
+
+新增字段、状态、事件、错误码或 artifact 时，按顺序更新：契约/类型或 registry → producer → consumer → report/render → tests/golden fixture。单边修改协议是架构错误。
+
+事实必须来自可信数据源：PDF parse、Source Data、工具输出、命令记录、manifest、schema 校验或人工复核记录。没有证据就写“未知 / 未提供 / 当前证据不足”，不要让 Agent 补事实。
+
+### AI、Prompt 与外部系统边界
+
+- Prompt 只负责组织语言、抽取结构化意图、语义映射、良性解释压力测试和报告措辞。
+- 路由规则、工具选择边界、状态机、权限、文件根目录、参数上下限、风险分层和 evidence schema 必须代码化、配置化或契约化。
+- LLM 调用必须任务化、结构化、可替换；返回 JSON trace 或 schema 对齐结果，不让上层解析裸自然语言作为事实。
+- 外部服务失败时应写入 manifest、limitations 和人工复核入口；不能静默降级成看似完整的结论。
+
+### 编码前最小流程
+
+动手前按最小成本完成：
+
+1. 读现有文档、契约、相邻代码和相关测试。
+2. 确认目标属于 P0、P1、P2 还是不做。
+3. 列出关键假设、破坏面和需要保留的已有行为。
+4. 画清输入到输出的数据流，确认事实源和副作用边界。
+5. 选择最小实现，只触碰必要文件。
+6. 先定义验证方式，再实现；外部集成优先 fixture-based test。
+
+如果某一步无法完成，先缩小范围或补上下文，不要靠堆代码推进。
+
+### Bug 排查流程
+
+修 Bug 时先定位状态从哪一层开始偏离预期：
+
+```text
+复现问题
+  ↓
+定位层级
+  ↓
+追踪数据流和状态变化
+  ↓
+找到 root cause
+  ↓
+写最小修复
+  ↓
+补能失败的测试
+  ↓
+验证旧行为未破坏
+```
+
+禁止在没看清状态演变前堆 if/else。修复应修正模型、契约或边界，而不是只补一个特殊情况。
+
+### 测试原则
+
+- 测试必须验证真实源码行为，而不是验证 mock 行为。
+- Mock 只打在 I/O 边界，例如网络、外部 API、文件系统、时钟或模型调用。
+- 修 Bug 优先添加能在修复前失败的最小测试。
+- 协议、schema、artifact、report 和 Agent structured output 要测序列化、非法输入和契约对齐。
+- 涉及外部服务的能力，先用 fixture/golden case 固定行为，再接真实服务。
+
+判断测试价值的问题是：如果源码里这行逻辑写错了，这个断言会失败吗？不会失败的测试不要写成核心保障。
+
+### 熵增止损
+
+出现以下信号时，暂停堆功能，先整理模型或契约：
+
+- 同一业务语义出现 3 种以上命名或表示方式。
+- 一个字段、状态、事件或类型被赋予多重含义。
+- 无法画出清晰数据流。
+- 单个函数、组件、Prompt 或配置文件承担多个职责。
+- if/else 主要在弥补糟糕的数据结构。
+- 业务规则散落在 UI、脚本、Repo、Prompt 或报告模板中。
+- 测试大量依赖内部 mock，无法证明真实行为。
+- 新需求总是需要复制粘贴相似代码。
+- 修 Bug 总是在加特殊情况，而不是修正模型。
+
 ## 仓库结构
 
 本仓库是孵化仓，不是成熟 SDK 包。
 
 ```text
 cli/          CLI demo 入口
-engine/       claim 审计、静态审查内核和报告逻辑
+engine/       claim 审计、静态审查内核、Agent 调查和报告逻辑
 runtime/      本地执行后端，未来可能独立成服务
 protocols/    垂直领域规则，先从医学生信开始
+configs/      opencode 上下文、领域 methodology 和运行配置
 docs/         产品、开发、决策和本地参考文档
 examples/     demo 输入和 manifest
+scripts/      可复用本地工具脚本；不要承载产品规则
 web/          Web P1：stdlib backend + Vite React frontend
 third_party/  外部参考仓库和能力吸收区
 outputs/      报告和本地运行产物
+web_data/     Web P1 本地 case store 和运行状态
 tests/        单测、集成测试和 e2e 测试
 ```
 
@@ -202,28 +350,26 @@ tests/        单测、集成测试和 e2e 测试
 
 `engine/static_audit/` 是当前 `audit-paper` 的 first-party 静态审查内核。后续新增静态审查 schema、role、tool、orchestrator 行为，优先放在这里，不要继续把产品逻辑堆进 `scripts/`。
 
+`CodeMAP.md` 是模块职责和调用关系索引。做跨模块改动前优先读取它，避免凭目录名猜边界。
+
 当前 role 层不是从 `agent_review` 派生的假 trace。`ClaimExtractor`、`SourceDataAuditor`、`JudgeAgent` 已通过 `engine.investigation.opencode_agent.run_agent_role()` 独立调用 opencode；成功 role 在未指定 `--force` 时会复用已有 output/trace，避免重复调用把成功结果覆盖成失败结果。
 
 不要把 `runtime/` 移到 `engine/` 下面。`runtime/` 是一级产品原语。
 
-## 当前产品范围
+### 本地产物和提交边界
 
-MVP 聚焦：
+- `input/`、`outputs/`、`web_data/`、`web/frontend/dist/`、`web/frontend/node_modules/` 和 `.env*` 默认是本地输入、运行产物、构建产物或密钥，不要提交。
+- 如果当前 checkout 存在 `.gitmodules`、`third_party/` 或 `docs/`，优先把它们视为本地增强上下文和能力积累；不要假设所有干净 clone 都一定包含这些内容，除非项目已明确调整 git tracking 策略。
+- 真实论文、真实运行产物和密钥不能写入 `docs/`、报告模板或示例 fixture。
 
-- Python/R 医学生信论文
-- 服务式流程：用户提交，我们代跑
-- PI / 课题组是第一付费方和主要报告读者
-- CLI-first 内部 demo
+## 当前执行口径
 
-MVP 明确不做：
+上文“当前范围”是产品边界，本节只补工程执行口径：
 
-- 完整 SaaS 任务提交
-- 远程 worker 集群
-- 长训练
-- 自动改代码
-- 自动提交 patch
-- 学术价值判断
-- 最终诚信判定
+- P0 仍是 `audit-paper` happy path 能稳定走通并产出结构化证据和报告。
+- P1 是 ELIS-style 视觉取证、Web P1 工作台、可靠性和关键差异化。
+- `precheck` / `run` / `report` 已存在，但不要因此把当前产品表述成完整 SaaS 或完整 runtime 审查系统。
+- PI / 课题组是第一付费方和主要报告读者；报告要保持谨慎风险语言和人工复核入口。
 
 ## 当前开发优先级
 
@@ -358,14 +504,30 @@ MVP 最低测试范围：
 
 `third_party/` 是能力吸收区，不是主产品源码。
 
-使用方式：
+当前本地 `.gitmodules` 积累的参考仓库：
 
-- `research-integrity-auditor`：借 MinerU 流程、evidence ledger、谨慎风险语言
-- `elis`：借图像取证工具栈、panel/copy-move/TruFor/CBIR 思路和视觉证据包，不直接复用其 SaaS 主服务
-- `deepwiki-open`：借 repo 理解和 Mermaid 图思路
-- `AsyncReview`：借递归调查和工具调用模式
+| submodule | 可借鉴 | 禁止 |
+|---|---|---|
+| `third_party/research-integrity-auditor` | MinerU 流程、evidence ledger、numeric forensics、证据标注图、谨慎风险语言 | 不把 vendor 输出格式当 Veritas 长期协议；不在 vendor 目录表达产品规则 |
+| `third_party/elis` | pdf-extractor、panel-extractor、copy-move、TruFor、CBIR/Milvus、视觉证据包思路 | 不直接接入 ELIS FastAPI/Celery/MongoDB/Redis/Web UI 主服务；引入重型模型或 AGPL 组件前先评估许可证、部署和失败隔离 |
+| `third_party/deepwiki-open` | repo 理解、wiki 组织、Mermaid/结构图表达 | 不把 Next.js 主应用或通用 repo-wiki 产品形态搬进 Veritas 主架构 |
+| `third_party/AsyncReview` | recursive investigation、工具调用和验证循环、代码审查式上下文探索 | 不允许 Agent 绕过 Tool Registry 任意执行 sandbox 代码；不把 GitHub token / 外部 PR 流程变成 Veritas 主依赖 |
 
 不要把大型第三方内部实现直接 import 进主链路。先用本地 adapter 包起来。
+
+第三方能力进入主链路的顺序必须是：
+
+```text
+license / data-boundary review
+-> first-party adapter or tool wrapper
+-> engine/tools/registry.py 注册 tool_id、参数边界、输出契约
+-> 写入结构化 artifact
+-> manifest / investigation_rounds / limitations 记录成功、跳过或失败
+-> fixture 或 golden test 固定行为
+-> report / HTML visual package 消费结构化结果
+```
+
+`engine/static_audit/upstream/research_integrity_auditor/` 是对 `third_party/research-integrity-auditor` 的只读能力镜像。不要直接修改镜像来表达 Veritas 产品行为；需要同步 upstream 时应明确记录 upstream commit，需要 patched behavior 时在 first-party adapter 或 tool 中实现。
 
 ## 文档驱动开发
 
