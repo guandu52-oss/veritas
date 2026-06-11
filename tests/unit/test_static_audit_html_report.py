@@ -252,3 +252,45 @@ def test_static_audit_html_report_renders_canonical_non_source_data_finding(tmp_
     assert "VF-001" in html
     assert "near_duplicate_image" in html
     assert "Evidence refs" in html
+
+
+def test_static_audit_html_report_renders_paperfraud_rule_matches(tmp_path) -> None:
+    write_json(
+        tmp_path / "paperfraud_rule_matches.json",
+        {
+            "summary": {
+                "total_rules_loaded": 48,
+                "total_triggered": 1,
+                "methodology_review_triggered": 1,
+                "fraud_detection_triggered": 0,
+                "red_count": 0,
+                "orange_count": 1,
+                "yellow_count": 0,
+            },
+            "triggered_rules": [
+                {
+                    "rule_id": "statistical_methods.effect_size_missing",
+                    "title": "Only p-value reported without effect size",
+                    "severity": "orange",
+                    "rule_type": "methodology_review",
+                    "category": "统计方法审查",
+                    "evidence": "Matched p-value language in Methods.",
+                    "human_review": "Check whether the manuscript reports effect size and uncertainty.",
+                }
+            ],
+            "reviewer_form": [
+                {
+                    "rule_id": "statistical_methods.effect_size_missing",
+                    "human_review_guide": "Check whether the manuscript reports effect size and uncertainty.",
+                }
+            ],
+        },
+    )
+    write_json(tmp_path / "static_audit_bundle.json", {"agent_traces": [], "claim_mappings": []})
+
+    html = render_static_audit_html(tmp_path, "case-paperfraud")
+
+    assert "PaperFraud 规则库命中" in html
+    assert "statistical_methods.effect_size_missing" in html
+    assert "orange" in html
+    assert "Check whether the manuscript reports effect size" in html

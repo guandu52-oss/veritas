@@ -1,0 +1,121 @@
+# 文本造假模式库
+# 来源: PubPeer/ForBetterScience → Crawler → LLM 提取 → 人工审核
+# 用途: 静态材料核查 — 文本层面的学术不端检测
+# 维护者: 文本取证审查组
+
+category: "文本造假模式"
+type: "fraud_detection"
+description: >
+  从 PubPeer 和 Retraction Watch 等学术诚信社区提取的文本造假模式。
+  分为 blacklist（可疑短语）和 camouflage（模板句式）两大类。
+  所有模式来源于已撤稿或已标记的论文，经 LLM 提取和人工审核。
+
+rules:
+  # ── 纸厂模板句式 ──────────────────────────────────────────────────────
+  - id: "text.paper_mill_template"
+    category: "文本造假模式"
+    subcategory: "论文工厂"
+    title: "论文工厂模板化句式"
+    severity: "orange"
+    type: "fraud_detection"
+    description: >
+      论文工厂使用标准化模板生成论文，产生高度重复的句式结构。
+      如 'To address these constraints, this study incorporates...' 等。
+    detection:
+      triggers:
+        keywords:
+          - "To address these constraints, this study incorporates"
+          - "To address this gap, we employed"
+          - "Taken together, these findings demonstrate that"
+          - "Our findings provide novel insights into"
+          - "Further studies are warranted to elucidate"
+    evidence_template: >
+      [RULE text.paper_mill_template]
+      检测到论文工厂常见模板句式。上下文: "{excerpt}"
+    human_review: >
+      单一句式不能判定为论文工厂。需结合其他信号综合判断。
+      若同时出现图像复用、数据不一致等问题，可疑度显著上升。
+    references:
+      - "Byrne JA, Christopher J. Digital Magic. bioRxiv. 2020."
+    source: "crawler/pubpeer → learner → paperfraud_data/knowledge/fraud_patterns/"
+
+  # ── 模糊方法描述 ──────────────────────────────────────────────────────
+  - id: "text.vague_method_description"
+    category: "文本造假模式"
+    subcategory: "方法模糊"
+    title: "方法描述异常模糊——疑似对方法不熟悉或抄袭"
+    severity: "yellow"
+    type: "fraud_detection"
+    description: >
+      使用 'presumably'、'so-called' 等词语描述本应明确的方法细节，
+      暗示作者可能未实际使用该方法或对方法不熟悉。
+    detection:
+      triggers:
+        keywords:
+          - "presumably"
+          - "so-called"
+          - "a specific method or algorithm"
+          - "a certain method"
+          - "某一方法"
+          - "某种算法"
+    evidence_template: >
+      [RULE text.vague_method_description]
+      方法描述使用模糊词汇。上下文: "{excerpt}"
+      本应明确的实验方法使用了不确切的表述。
+    human_review: >
+      确认该方法是否在后续被具体描述。如果整个方法学部分多处使用模糊表达，可疑度较高。
+    source: "crawler/pubpeer → learner"
+
+  # ── 数据声明异常 ──────────────────────────────────────────────────────
+  - id: "text.data_availability_suspicious"
+    category: "文本造假模式"
+    subcategory: "数据可获取性"
+    title: "数据可获取性声明异常"
+    severity: "yellow"
+    type: "fraud_detection"
+    description: >
+      声称数据可获取但使用模糊或不可能满足的条件，
+      如 'data available upon reasonable request' 但无联系信息，
+      或声称数据已上传但存储库不存在。
+    detection:
+      triggers:
+        keywords:
+          - "data available upon request"
+          - "data will be made available"
+          - "available from the corresponding author"
+          - "数据可向通讯作者索取"
+    evidence_template: >
+      [RULE text.data_availability_suspicious]
+      数据可获取性声明模糊。上下文: "{excerpt}"
+    human_review: >
+      检查是否提供了具体的数据存储库和 accession number。
+      仅有通讯作者邮箱的声明不符合 FAIR 数据原则。
+    references:
+      - "Wilkinson MD, et al. The FAIR Guiding Principles. Sci Data. 2016."
+    source: "crawler/pubpeer → learner"
+
+  # ── 作者贡献声明异常 ──────────────────────────────────────────────────
+  - id: "text.author_contribution_suspicious"
+    category: "文本造假模式"
+    subcategory: "作者身份"
+    title: "作者贡献声明可疑——疑似买/卖署名"
+    severity: "yellow"
+    type: "fraud_detection"
+    description: >
+      所有作者贡献完全相同或使用了统一的模板化表述，
+      暗示作者可能未真正参与研究（论文工厂/代写服务特征）。
+    detection:
+      triggers:
+        keywords:
+          - pattern: "all authors contributed equally"
+            type: "keyword"
+          - pattern: "(?:contributed to the (?:study|manuscript|work) and approved)"
+            type: "regex"
+    evidence_template: >
+      [RULE text.author_contribution_suspicious]
+      作者贡献声明使用模板化语言。上下文: "{excerpt}"
+    human_review: >
+      查看 CRediT 贡献声明是否按角色细分。简化的贡献声明并非造假证据，但需注意。
+    references:
+      - "ICMJE. Defining the Role of Authors and Contributors. 2024."
+    source: "crawler/pubpeer → learner"

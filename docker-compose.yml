@@ -1,0 +1,32 @@
+services:
+  veritas:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: veritas-web
+    restart: unless-stopped
+    ports:
+      - "80:8765"
+    volumes:
+      - /data/veritas/web_data:/app/web_data
+      - /data/veritas/outputs:/app/outputs
+    env_file:
+      - .env
+    environment:
+      - TZ=Asia/Shanghai
+      - VERITAS_LOG_LEVEL=INFO
+      - VERITAS_HOST=0.0.0.0
+      - VERITAS_PORT=8765
+      - VERITAS_DATA_ROOT=/app/web_data
+      - VERITAS_OUTPUT_ROOT=/app/outputs
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8765/api/health"]
+      interval: 60s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"

@@ -73,6 +73,43 @@ def render_findings_by_category(
     return "\n".join(sections) if sections else "<p class='muted'>未生成高优先级 finding。</p>"
 
 
+def paperfraud_rule_section(artifact: dict[str, Any]) -> str:
+    summary = artifact.get("summary") if isinstance(artifact.get("summary"), dict) else {}
+    triggered = [item for item in (artifact.get("triggered_rules") or []) if isinstance(item, dict)]
+    rows = []
+    for item in triggered[:12]:
+        rows.append(
+            "<tr>"
+            f"<td><code>{h(item.get('rule_id', '-'))}</code></td>"
+            f"<td>{h(item.get('severity', '-'))}</td>"
+            f"<td>{h(item.get('rule_type', '-'))}</td>"
+            f"<td>{h(item.get('title', '-'))}</td>"
+            f"<td>{h(item.get('evidence', '-'))}</td>"
+            f"<td>{h(item.get('human_review', '-'))}</td>"
+            "</tr>"
+        )
+    table = (
+        "<table><thead><tr>"
+        "<th>rule_id</th><th>severity</th><th>type</th><th>title</th><th>evidence</th><th>human review</th>"
+        "</tr></thead><tbody>"
+        + "".join(rows)
+        + "</tbody></table>"
+        if rows
+        else "<p class='muted'>未命中 PaperFraud 规则库提示项，或尚未生成 paperfraud_rule_matches.json。</p>"
+    )
+    return f"""
+      <h2>PaperFraud 规则库命中</h2>
+      <p class="muted">这些命中是方法学和 fraud-pattern reviewer prompts，只用于收敛人工复核问题，不构成最终学术不端判定。</p>
+      <div class="grid cols-4">
+        {metric("规则数", summary.get("total_rules_loaded", "-"))}
+        {metric("命中数", summary.get("total_triggered", "-"))}
+        {metric("methodology", summary.get("methodology_review_triggered", "-"))}
+        {metric("fraud-pattern", summary.get("fraud_detection_triggered", "-"))}
+      </div>
+      {table}
+    """
+
+
 def render_static_audit_html(workdir: Path, case_id: str) -> str:
     manifest = read_json(workdir / "audit_run_manifest.json") or {}
     bundle = read_json(workdir / "static_audit_bundle.json") or {}
@@ -85,6 +122,7 @@ def render_static_audit_html(workdir: Path, case_id: str) -> str:
     ledger = read_json(workdir / "evidence_ledger.json") or {}
     exact_images = read_json(workdir / "exact_image_duplicates.json") or {}
     similarity = read_json(workdir / "image_similarity_candidates.json") or {}
+    paperfraud_matches = read_json(workdir / "paperfraud_rule_matches.json") or {}
     agent_judge = read_json(workdir / "agent_judge.json") or {}
     source_auditor = read_json(workdir / "agent_source_data_auditor.json") or {}
     claim_extractor = read_json(workdir / "agent_claim_extractor.json") or {}
@@ -646,6 +684,10 @@ def render_static_audit_html(workdir: Path, case_id: str) -> str:
       <h2>人工复核清单</h2>
       <p class="muted">这些问题是报告的行动入口。Veritas 不替代人工判断，而是把最值得核对的 workbook、sheet、row/column 和 claim 收敛出来。</p>
       {manual_tasks_table(manual_tasks)}
+    </section>
+
+    <section class="panel section" id="paperfraud-rules">
+      {paperfraud_rule_section(paperfraud_matches)}
     </section>
 
     <section class="panel section" id="coverage">
@@ -1936,6 +1978,7 @@ def artifact_links(workdir: Path) -> str:
         "agent_judge.json",
         "evidence_ledger.json",
         "numeric_forensics.json",
+        "paperfraud_rule_matches.json",
         "exact_image_duplicates.json",
         "image_similarity_candidates.json",
         "investigation_rounds.jsonl",

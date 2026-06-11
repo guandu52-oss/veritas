@@ -1,0 +1,416 @@
+# 研究设计合理性审核规则 (12 条)
+# 来源: paperfraud/checks/public_health/study_design.py
+# 用途: 静态材料核查 — 方法论质量评估
+# 注意: 这些规则检测的是研究设计是否合理，而非数据造假。
+#       设计缺陷 ≠ 学术不端，但可作为论文质控的参考维度。
+# 维护者: 流行病学方法论审查组
+
+category: "研究设计"
+type: "methodology_review"  # methodology_review | fraud_detection
+description: >
+  评估流行病学研究设计的合理性，包括研究设计类型识别、
+  因果推断层级匹配、对照设置、样本代表性和偏倚控制。
+  这些规则编码了流行病学核心方法论知识，
+  LLM Agent 常能理解统计但无法正确判断因果推断层级。
+  注意：此模块检测方法论缺陷，不等同于学术不端判定。
+
+rules:
+  # ── Rule 1 ──────────────────────────────────────────────────────────
+  - id: "study_design.cross_sectional_causal"
+    category: "研究设计"
+    subcategory: "横断面研究"
+    title: "横断面研究声称因果关系"
+    severity: "red"
+    description: >
+      横断面研究只能描述关联，不能推断因果。
+      使用因果性语言属于严重方法学错误。
+    detection:
+      triggers:
+        study_types:
+          - "cross_sectional"
+        keywords:
+          - pattern: "causes?|caused by|lead(?:s|ing)? to|result(?:s|ing)? in|risk factor for|protective factor for|increases? (?:the )?risk|decreases? (?:the )?risk|predictor of|determinant of|contributes? to|responsible for"
+            type: "regex"
+          - pattern: "导致|引起|危险因素|保护因素|增加.*风险|降低.*风险"
+            type: "regex"
+    evidence_template: >
+      [RULE study_design.cross_sectional_causal]
+      横断面研究声称因果关系。上下文: "...{excerpt}..."
+      横断面研究只能描述关联，不能推断因果。
+    human_review: >
+      确认论文是否明确描述了因果推断或仅使用了统计关联性语言。
+      横断面研究应使用 prevalence/association/associated with 而非 cause/risk factor。
+    references:
+      - "Rothman KJ. Epidemiology: An Introduction. Oxford University Press, 2012."
+      - "Hernán MA. The C-Word: Scientific Euphemisms Do Not Improve Causal Inference. Am J Public Health. 2018."
+    source: "paperfraud/checks/public_health/study_design.py"
+
+  # ── Rule 2 ──────────────────────────────────────────────────────────
+  - id: "study_design.case_control_incidence"
+    category: "研究设计"
+    subcategory: "病例对照研究"
+    title: "病例对照研究声称发病率"
+    severity: "red"
+    description: >
+      病例对照研究基于已有病例，无法计算发病率（只能计算 OR）。
+      发病率需要人时数据（随访），病例对照研究的分母不是人时。
+    detection:
+      triggers:
+        study_types:
+          - "case_control"
+        keywords:
+          - pattern: "incidence|incidence rate|incidence density|cumulative incidence|attack rate"
+            type: "regex"
+          - pattern: "发病率|罹患率"
+            type: "regex"
+    evidence_template: >
+      [RULE study_design.case_control_incidence]
+      病例对照研究声称发病率。检测到: "{excerpt}"
+      病例对照研究的分母不是人时，无法计算发病率（只能计算 OR，不能计算 RR 或发病率）。
+    human_review: >
+      确认论文报告中是否将 OR 误称为 RR 或发病率。
+      病例对照研究应使用优势比 (OR)，队列研究/RCT 才能使用风险比 (RR) 和发病率。
+    references:
+      - "Knol MJ, et al. What Do Case-Control Studies Estimate? Int J Epidemiol. 2008."
+    source: "paperfraud/checks/public_health/study_design.py"
+
+  # ── Rule 3 ──────────────────────────────────────────────────────────
+  - id: "study_design.ecological_fallacy"
+    category: "研究设计"
+    subcategory: "生态学研究"
+    title: "生态学研究做个体层面推断"
+    severity: "red"
+    description: >
+      生态学研究使用群体汇总数据，不能推断个体层面关联。
+      将群体特征归因于个体属于生态学谬误 (ecological fallacy)。
+    detection:
+      triggers:
+        study_types:
+          - "ecological"
+        keywords:
+          - pattern: "individual[ .]level|personal risk|patient[ .]level|subject[ .]level"
+            type: "regex"
+          - "每个个体"
+          - "个人风险"
+          - "患者层面"
+    evidence_template: >
+      [RULE study_design.ecological_fallacy]
+      生态学研究做个体层面推断——生态学谬误。检测到: "{excerpt}"
+    human_review: >
+      生态学研究只能描述群体层面关联，不能推断个体危险因素。
+    references:
+      - "Robinson WS. Ecological Correlations and the Behavior of Individuals. Am Sociol Rev. 1950."
+      - "Piantadosi S, et al. The Ecological Fallacy. Am J Epidemiol. 1988."
+    source: "paperfraud/checks/public_health/study_design.py"
+
+  # ── Rule 4 ──────────────────────────────────────────────────────────
+  - id: "study_design.no_control_group"
+    category: "研究设计"
+    subcategory: "对照组"
+    title: "无对照组但声称疗效"
+    severity: "red"
+    description: >
+      单臂研究无法区分治疗效应与自然病程或安慰剂效应。
+      无对照组设置但使用疗效性语言属于严重设计缺陷。
+    detection:
+      triggers:
+        study_types:
+          - "experimental"
+        keywords:
+          - pattern: "efficacious|effective (?:in|for|against) (?:treat|manag|prevent)|therapeutic (?:effect|benefit|potential|efficacy)|treatment was (?:effective|beneficial|superior)"
+            type: "regex"
+          - pattern: "有效治疗|疗效显著|治疗有效|治疗效果明显"
+            type: "regex"
+      negative_triggers:
+        - "control group"
+        - "comparison group"
+        - "placebo group"
+        - "sham group"
+        - "vehicle group"
+        - "PBS-treated"
+        - "PBS-injected"
+        - "vehicle-treated"
+        - "mock-treated"
+        - "untreated group"
+        - "wild-type group"
+        - "negative control"
+        - "对照组"
+        - "安慰剂组"
+        - "compared to"
+        - "compared with"
+        - "versus control"
+        - "vs. control"
+    evidence_template: >
+      [RULE study_design.no_control_group]
+      无对照组证据但声称疗效。上下文: "...{excerpt}..."
+      单臂研究无法区分治疗效应与自然病程/安慰剂效应。
+    human_review: >
+      确认对照组设置是否充分。单臂研究不应声称疗效。
+      如果存在对照组但未使用标准术语描述，人工确认后降级。
+    references:
+      - "ICH E10. Choice of Control Group in Clinical Trials. 2000."
+    source: "paperfraud/checks/public_health/study_design.py"
+
+  # ── Rule 5 ──────────────────────────────────────────────────────────
+  - id: "study_design.observational_rct_language"
+    category: "研究设计"
+    subcategory: "观察性研究"
+    title: "观察性研究使用 RCT 语言"
+    severity: "orange"
+    description: >
+      观察性研究不能声称"treatment effect"，
+      应使用"association"。使用 RCT 因果性语言属于方法学混淆。
+    detection:
+      triggers:
+        study_types:
+          - "cross_sectional"
+          - "case_control"
+          - "cohort"
+        keywords:
+          - pattern: "intervention effect|randomly assigned|randomization|treatment arm|intervention arm"
+            type: "regex"
+          - pattern: "治疗效应|随机分配|干预组"
+            type: "regex"
+    evidence_template: >
+      [RULE study_design.observational_rct_language]
+      观察性研究使用 RCT 语言。检测到: "{excerpt}"
+      观察性研究应使用关联性语言，不应使用因果性/干预性语言。
+    human_review: >
+      确认作者是否过度解读观察性结果为因果效应。
+    references:
+      - "Vandenbroucke JP, et al. STROBE Initiative. Lancet. 2007."
+    source: "paperfraud/checks/public_health/study_design.py"
+
+  # ── Rule 6 ──────────────────────────────────────────────────────────
+  - id: "study_design.retrospective_prospective_confusion"
+    category: "研究设计"
+    subcategory: "研究类型混淆"
+    title: "回顾性和前瞻性术语混淆"
+    severity: "orange"
+    description: >
+      同时使用"回顾性"和"前瞻性"描述同一研究。
+      回顾性研究使用已有数据（暴露和结局均已发生），
+      不应称为前瞻性队列。
+    detection:
+      triggers:
+        study_types:
+          - "cohort"
+        keywords:
+          - "retrospective"
+          - "retrospectively"
+          - "chart review"
+          - "medical record review"
+          - "回顾性"
+      negative_triggers:
+        - "prospective"
+        - "prospectively"
+        - "前瞻性"
+    evidence_template: >
+      [RULE study_design.retrospective_prospective_confusion]
+      同时使用'回顾性'和'前瞻性'描述同一研究——可能存在术语混淆。
+    human_review: >
+      回顾性队列研究使用已有数据（暴露和结局均已发生），
+      不应与前瞻性队列研究（暴露已确定但结局尚未发生）混淆。
+    references:
+      - "Euser AM, et al. Cohort Studies: Prospective versus Retrospective. Nephron Clin Pract. 2009."
+    source: "paperfraud/checks/public_health/study_design.py"
+
+  # ── Rule 7 ──────────────────────────────────────────────────────────
+  - id: "study_design.small_sample_no_power"
+    category: "研究设计"
+    subcategory: "样本量"
+    title: "小样本未报告功效分析"
+    severity: "yellow"
+    description: >
+      样本量小的研究应提供功效分析，证明样本量足以检测预期效应量。
+    detection:
+      triggers:
+        keywords:
+          - pattern: "n\\s*[=＝]\\s*(?:[1-9]|[1-4]\\d)\\b"
+            type: "regex"
+      negative_triggers:
+        - "power analysis"
+        - "power calculation"
+        - "sample size calculation"
+        - "sample size estimation"
+        - "G*Power"
+        - "功效分析"
+        - "样本量计算"
+    evidence_template: >
+      [RULE study_design.small_sample_no_power]
+      检测到小样本但未提及样本量功效分析。上下文: "{excerpt}"
+    human_review: >
+      小样本研究应提供功效分析，证明样本量足以检测预期效应量。
+    references:
+      - "Cohen J. Statistical Power Analysis for the Behavioral Sciences. 1988."
+    source: "paperfraud/checks/public_health/study_design.py"
+
+  # ── Rule 8 ──────────────────────────────────────────────────────────
+  - id: "study_design.convenience_sample_representative"
+    category: "研究设计"
+    subcategory: "抽样方法"
+    title: "便利抽样声称代表性"
+    severity: "orange"
+    description: >
+      便利抽样本质上是非概率抽样，无法保证样本代表目标人群。
+    detection:
+      triggers:
+        keywords:
+          - "convenience sample"
+          - "convenience sampling"
+          - "convenient sample"
+          - "方便抽样"
+          - "便利样本"
+        additional_conditions:
+          - "also_contains: representative"
+          - "also_contains: generalizable"
+          - "also_contains: 代表性"
+          - "also_contains: 推广"
+    evidence_template: >
+      [RULE study_design.convenience_sample_representative]
+      便利抽样样本声称代表性。上下文: "{excerpt}"
+      便利抽样（如医院门诊患者、大学生志愿者）存在严重选择偏倚。
+    human_review: >
+      便利抽样结论不应声称可推广至一般人群。
+    references:
+      - "Etikan I, et al. Comparison of Convenience Sampling and Purposive Sampling. Am J Theor Appl Stat. 2016."
+    source: "paperfraud/checks/public_health/study_design.py"
+
+  # ── Rule 9 ──────────────────────────────────────────────────────────
+  - id: "study_design.no_dropout_reporting"
+    category: "研究设计"
+    subcategory: "随访偏倚"
+    title: "随访研究未报告失访情况"
+    severity: "yellow"
+    description: >
+      队列/RCT 研究应报告失访率和失访原因。
+      未报告失访可能存在 attrition bias。
+    detection:
+      triggers:
+        study_types:
+          - "cohort"
+          - "rct"
+      negative_triggers:
+        - "drop-out"
+        - "drop out"
+        - "attrition"
+        - "loss to follow"
+        - "withdrawal"
+        - "discontinuation"
+        - "失访"
+        - "脱落"
+        - "退出"
+        - "中止"
+    evidence_template: >
+      [RULE study_design.no_dropout_reporting]
+      队列/RCT 研究未报告失访/脱落情况——可能存在 attrition bias。
+    human_review: >
+      随访研究应报告失访率和失访原因，并分析失访者与完成者的基线差异。
+    references:
+      - "Dumville JC, et al. Reporting Attrition in RCTs. BMJ. 2006."
+    source: "paperfraud/checks/public_health/study_design.py"
+
+  # ── Rule 10 ──────────────────────────────────────────────────────────
+  - id: "study_design.cross_sectional_incidence"
+    category: "研究设计"
+    subcategory: "横断面研究"
+    title: "横断面研究使用'发病率'"
+    severity: "orange"
+    description: >
+      横断面研究只能测量现患率 (prevalence)，不能测量发病率 (incidence)。
+      发病率需要随访（人时数据），横断面研究只反映某一时点的情况。
+    detection:
+      triggers:
+        study_types:
+          - "cross_sectional"
+        keywords:
+          - pattern: "incidence rate|incidence density|new cases? per|发病率"
+            type: "regex"
+    evidence_template: >
+      [RULE study_design.cross_sectional_incidence]
+      横断面研究使用'发病率'——横断面研究只能测量现患率 (prevalence)。
+    human_review: >
+      确认论文是横断面设计（某一时点）还是具有随访成分。
+      只有随访研究才能估算发病率。
+    references:
+      - "Rothman KJ. Epidemiology: An Introduction. 2012."
+    source: "paperfraud/checks/public_health/study_design.py"
+
+  # ── Rule 11 ──────────────────────────────────────────────────────────
+  - id: "study_design.no_design_declaration"
+    category: "研究设计"
+    subcategory: "研究设计声明"
+    title: "未明确声明研究设计类型"
+    severity: "yellow"
+    description: >
+      全文未明确声明研究设计类型，影响读者评估证据等级。
+    detection:
+      triggers: {}
+      negative_triggers:
+        - "study design"
+        - "cross-sectional"
+        - "case-control"
+        - "cohort"
+        - "randomized controlled trial"
+        - "RCT"
+        - "longitudinal"
+        - "prospective"
+        - "retrospective"
+        - "ecological study"
+        - "systematic review"
+        - "meta-analysis"
+        - "研究设计"
+        - "横断面"
+        - "病例对照"
+        - "队列"
+        - "随机对照"
+        - "生态学"
+        - "系统综述"
+    evidence_template: >
+      [RULE study_design.no_design_declaration]
+      全文未明确声明研究设计类型——影响读者评估证据等级。
+    human_review: >
+      论文应在 Methods 开头明确说明研究设计类型
+      （RCT/队列/病例对照/横断面/生态学/系统综述等）。
+    references:
+      - "STROBE Statement. Checklist of Items for Cross-Sectional Studies."
+    source: "paperfraud/checks/public_health/study_design.py"
+
+  # ── Rule 12 ──────────────────────────────────────────────────────────
+  - id: "study_design.case_control_no_matching"
+    category: "研究设计"
+    subcategory: "病例对照研究"
+    title: "病例对照研究使用健康对照但未匹配"
+    severity: "orange"
+    description: >
+      病例对照研究中对照选择至关重要。
+      使用'健康对照'但未提及匹配方法可能存在选择偏倚。
+    detection:
+      triggers:
+        study_types:
+          - "case_control"
+        keywords:
+          - "healthy controls"
+          - "healthy control"
+          - "normal controls"
+          - "健康对照"
+          - "正常对照"
+      negative_triggers:
+        - "matching"
+        - "matched by"
+        - "matched for"
+        - "propensity score matching"
+        - "frequency matching"
+        - "individual matching"
+        - "配对"
+        - "匹配"
+    evidence_template: >
+      [RULE study_design.case_control_no_matching]
+      病例对照研究使用'健康对照'但未提及匹配方法。
+      对照组应与病例组在关键混杂因素上匹配。
+    human_review: >
+      若未匹配年龄/性别等关键变量，可能存在选择偏倚。
+      确认对照组来源（医院对照/社区对照/人群对照）。
+    references:
+      - "Wacholder S, et al. Selection of Controls in Case-Control Studies. Am J Epidemiol. 1992."
+    source: "paperfraud/checks/public_health/study_design.py"

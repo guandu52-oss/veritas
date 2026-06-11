@@ -1,0 +1,281 @@
+# 统计方法审查规则
+# 来源: paperfraud/checks/stats/ (sample_size, p_hacking, normality_claim, fallacies, method_misuse)
+# 用途: 静态材料核查
+# 维护者: 统计方法审查组
+
+category: "统计方法"
+description: >
+  检查论文中统计方法的使用是否正确、完整。
+  涵盖样本量、p值、正态性假设、逻辑谬误和方法误用。
+
+rules:
+  # ── 样本量 ────────────────────────────────────────────────────────────
+  - id: "stats.n_less_than_3"
+    category: "统计方法"
+    subcategory: "样本量"
+    title: "样本量 n<3，统计检验不成立"
+    severity: "red"
+    type: "methodology_review"
+    description: >
+      n<3 时无法计算方差（df<1），任何两样本比较的统计检验均不成立。
+      这不是功效低的问题，是检验根本不成立。
+    detection:
+      triggers:
+        keywords:
+          - pattern: "(?:each|per)\\s+group\\s*[:,]?\\s*n\\s*[=＝]\\s*[12]\\b"
+            type: "regex"
+          - pattern: "\\(n\\s*[=＝]\\s*[12]\\)"
+            type: "regex"
+    evidence_template: >
+      [RULE stats.n_less_than_3]
+      检测到 n<3 的组别样本量声明。上下文: "{excerpt}"
+      n<3 无法计算方差，统计检验不成立。
+    human_review: >
+      确认该 n 值是组样本量还是其他含义。n=2 时无法进行两样本比较。
+    references:
+      - "Altman DG, Bland JM. Statistics Notes: The Normal Distribution. BMJ. 1995."
+    source: "paperfraud/checks/stats/sample_size.py"
+
+  - id: "stats.small_n_significance"
+    category: "统计方法"
+    subcategory: "样本量"
+    title: "小样本 + 极显著 p 值——效应量合理性审查"
+    severity: "yellow"
+    type: "methodology_review"
+    description: >
+      n=3 且 p<0.01 时，需要极大的效应量（d>3.0），
+      在大多数生物实验中几乎不可能。
+      需审查效应量是否合理。
+    detection:
+      triggers:
+        keywords:
+          - pattern: "n\\s*[=＝]\\s*[34]\\b.{0,100}?[pP]\\s*[<≤]\\s*0[.]0(?:0[1-9]|1)"
+            type: "regex"
+    evidence_template: >
+      [RULE stats.small_n_significance]
+      小样本 + 极显著声称。上下文: "{excerpt}"
+      建议确认效应量是否合理。
+    human_review: >
+      使用 t 分布计算给定 n 下的最小临界效应量 d。
+      如果 d 远大于该领域的典型效应量，p 值可能不实。
+    references:
+      - "Cohen J. Statistical Power Analysis. 1988."
+    source: "paperfraud/checks/stats/sample_size.py"
+
+  - id: "stats.pseudoreplication"
+    category: "统计方法"
+    subcategory: "样本量"
+    title: "疑似伪重复 (Pseudoreplication)"
+    severity: "orange"
+    type: "methodology_review"
+    description: >
+      技术重复（同一样本分 3 孔/3 次测量）不能作为生物学重复进行组间统计推断。
+      将技术重复当作生物学重复来跑 t 检验属于伪重复。
+    detection:
+      triggers:
+        keywords:
+          - "triplicates"
+          - "in triplicate"
+          - "technical replicates"
+          - "technical repeat"
+          - "same sample"
+          - "same specimen"
+          - "same lysate"
+      negative_triggers:
+        - "biological replicate"
+        - "independent experiment"
+        - "independent replicate"
+        - "biological independent"
+        - "生物学重复"
+        - "独立实验"
+    evidence_template: >
+      [RULE stats.pseudoreplication]
+      检测到技术重复描述。上下文: "{excerpt}"
+      技术重复不能作为生物学重复进行组间统计推断。
+    human_review: >
+      区分生物学重复 vs 技术重复。技术重复的变异仅反映测量误差，
+      不能推广到总体。将技术重复当作生物学重复属于伪重复。
+    references:
+      - "Lazic SE. The Problem of Pseudoreplication. BMC Neuroscience. 2010."
+    source: "paperfraud/checks/stats/sample_size.py"
+
+  # ── p-hacking ─────────────────────────────────────────────────────────
+  - id: "stats.p_hacking_suspicious"
+    category: "统计方法"
+    subcategory: "p-hacking"
+    title: "p 值可疑模式——疑似 p-hacking"
+    severity: "yellow"
+    type: "fraud_detection"
+    description: >
+      大量 p 值集中在 0.01-0.05 区间是 p-hacking 的典型特征。
+      p-hacking 包括：选择性报告、数据窥探、多重比较不加校正等。
+    detection:
+      triggers:
+        keywords:
+          - pattern: "[pP]\\s*[<≤=]\\s*0[.]0[4-5]"
+            type: "regex"
+    evidence_template: >
+      [RULE stats.p_hacking_suspicious]
+      检测到 p 值集中在临界显著区间。上下文: "{excerpt}"
+      大量 p 值刚好 <0.05 可能是 p-hacking 信号。
+    human_review: >
+      检查：(1) 是否预注册了主要结局指标，
+      (2) 是否对多重比较进行了校正，
+      (3) 排除的样本和变量是否合理。
+    references:
+      - "Simmons JP, et al. False-Positive Psychology. Psychol Sci. 2011."
+      - "Head ML, et al. The Extent and Consequences of P-Hacking. PLOS Biology. 2015."
+    source: "paperfraud/checks/stats/p_hacking.py"
+
+  # ── 正态性 ────────────────────────────────────────────────────────────
+  - id: "stats.normality_claim_unverified"
+    category: "统计方法"
+    subcategory: "正态性"
+    title: "正态性假设未经验证"
+    severity: "yellow"
+    type: "methodology_review"
+    description: >
+      使用参数检验（t检验/ANOVA/线性回归）但未报告正态性检验结果。
+      小样本下正态性假设尤为关键。
+    detection:
+      triggers:
+        keywords:
+          - "t-test"
+          - "t test"
+          - "ANOVA"
+          - "linear regression"
+          - "Pearson correlation"
+      negative_triggers:
+        - "Shapiro-Wilk"
+        - "Kolmogorov-Smirnov"
+        - "normality"
+        - "normal distribution"
+        - "Q-Q plot"
+        - "正态性"
+        - "正态分布"
+        - "残差分析"
+    evidence_template: >
+      [RULE stats.normality_claim_unverified]
+      使用参数检验但未报告正态性检验结果。
+      小样本下正态性假设尤为关键。
+    human_review: >
+      参数检验依赖正态性假设。应报告正态性检验结果或使用非参数替代方案。
+    references:
+      - "Ghasemi A, Zahediasl S. Normality Tests for Statistical Analysis. Int J Endocrinol Metab. 2012."
+    source: "paperfraud/checks/stats/normality_claim.py"
+
+  # ── 逻辑谬误 ─────────────────────────────────────────────────────────
+  - id: "stats.correlation_causation"
+    category: "统计方法"
+    subcategory: "逻辑谬误"
+    title: "相关关系误作因果关系"
+    severity: "orange"
+    type: "methodology_review"
+    description: >
+      将相关性分析结果（Pearson/Spearman/相关矩阵）直接解释为因果关系。
+      相关 ≠ 因果。
+    detection:
+      triggers:
+        keywords:
+          - "correlation"
+          - "Pearson"
+          - "Spearman"
+          - "correlated"
+          - pattern: "(?:significantly|significantly)\\s+(?:correlated|associated|related)"
+            type: "regex"
+          - "相关"
+          - "关联"
+        negative_triggers:
+          - "associated with"  # cautious language, not causal
+          - "related to"       # cautious language, not causal
+          - "no significant correlation"
+          - "no significant association"
+    evidence_template: >
+      [RULE stats.correlation_causation]
+      疑似将相关性分析结果当作因果关系。上下文: "{excerpt}"
+    human_review: >
+      确认作者是否将相关性表述为因果性。相关分析不能支持因果推断。
+    references:
+      - "Altman N, Krzywinski M. Association, Correlation and Causation. Nat Methods. 2015."
+    source: "paperfraud/checks/stats/fallacies.py"
+
+  # ── 方法误用 ─────────────────────────────────────────────────────────
+  - id: "stats.parametric_on_ordinal"
+    category: "统计方法"
+    subcategory: "方法误用"
+    title: "对等级资料使用参数检验"
+    severity: "orange"
+    type: "methodology_review"
+    description: >
+      对 Likert 量表、等级评分等有序分类变量使用 t 检验或 ANOVA 不合适，
+      应使用 Mann-Whitney U/Kruskal-Wallis 等非参数检验。
+    detection:
+      triggers:
+        keywords:
+          - "Likert"
+          - "severity score"
+          - "pain score"
+          - "clinical score"
+          - "pathology score"
+          - "histology score"
+          - "量表"
+          - "评分"
+          - pattern: "(?:mean|median|average)\\s+(?:score|grade|rank)"
+            type: "regex"
+        negative_triggers:
+          - "phastCons score"
+          - "phyloP score"
+          - "conservation score"
+          - "alignment score"
+          - "BLAST score"
+          - "Z-score"
+          - "z score"
+          - "propensity score"
+          - "risk score"
+      additional_conditions:
+          - "also_contains: t-test"
+          - "also_contains: ANOVA"
+          - "also_contains: t test"
+    evidence_template: >
+      [RULE stats.parametric_on_ordinal]
+      疑似对等级/评分资料使用了参数检验。上下文: "{excerpt}"
+    human_review: >
+      Likert 量表等有序分类变量应使用非参数检验。
+    references:
+      - "Jamieson S. Likert Scales: How to (Ab)use Them. Med Educ. 2004."
+    source: "paperfraud/checks/stats/method_misuse.py"
+
+  - id: "stats.multiple_comparison_uncorrected"
+    category: "统计方法"
+    subcategory: "方法误用"
+    title: "多重比较未校正"
+    severity: "orange"
+    type: "methodology_review"
+    description: >
+      进行多次统计检验但未使用 Bonferroni、FDR 等多重比较校正方法。
+      多重比较会增加 I 类错误率。
+    detection:
+      triggers:
+        keywords:
+          - pattern: "(?:three|four|five|multiple|several|many|numerous|\\d+)\\s*(?:outcomes|endpoints|endpoints|comparisons|variables|measures|tests|analyses)"
+            type: "regex"
+      negative_triggers:
+        - "Bonferroni"
+        - "Tukey"
+        - "Dunnett"
+        - "FDR"
+        - "false discovery rate"
+        - "Holm"
+        - "Sidak"
+        - "Hochberg"
+        - "multiple comparison correction"
+        - "校正"
+        - "多重比较"
+    evidence_template: >
+      [RULE stats.multiple_comparison_uncorrected]
+      多次统计检验但未提及多重比较校正。上下文: "{excerpt}"
+    human_review: >
+      确认是否对多重比较进行了校正（Bonferroni/FDR 等）。
+    references:
+      - "Bender R, Lange S. Adjusting for Multiple Testing. Dtsch Arztebl Int. 2001."
+    source: "paperfraud/checks/stats/method_misuse.py"

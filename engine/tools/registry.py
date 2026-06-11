@@ -8,6 +8,7 @@ SOURCE_DATA_FINDINGS_TOOL_ID = "source_data.findings"
 SOURCE_DATA_PAIR_FORENSICS_TOOL_ID = "source_data.pair_forensics"
 SOURCE_DATA_CROSS_SHEET_TOOL_ID = "source_data.cross_sheet"
 IMAGE_SIMILARITY_TOOL_ID = "image.similarity_candidates"
+PAPERFRAUD_RULE_MATCH_TOOL_ID = "paperfraud.rule_match"
 
 EXECUTION_PHASE_MANDATORY_BOOTSTRAP = "mandatory_bootstrap"
 EXECUTION_PHASE_AGENT_SELECTABLE = "agent_selectable"
@@ -71,6 +72,17 @@ TOOLS: dict[str, ToolDefinition] = {
         execution_phase=EXECUTION_PHASE_MANDATORY_BOOTSTRAP,
         input_artifacts=("full.md",),
         output_artifacts=("numeric_forensics.json",),
+    ),
+    PAPERFRAUD_RULE_MATCH_TOOL_ID: ToolDefinition(
+        tool_id=PAPERFRAUD_RULE_MATCH_TOOL_ID,
+        step_key="paperfraud_rule_match",
+        title="PaperFraud 规则库匹配",
+        source="engine/static_audit/adapters/paperfraud_knowledge",
+        description="Match PaperFraud methodology and fraud-pattern rules against parsed paper text and generate reviewer prompts.",
+        expected_outputs=("paperfraud_rule_matches.json",),
+        execution_phase=EXECUTION_PHASE_MANDATORY_BOOTSTRAP,
+        input_artifacts=("full.md",),
+        output_artifacts=("paperfraud_rule_matches.json",),
     ),
     "material.inventory": ToolDefinition(
         tool_id="material.inventory",
@@ -278,6 +290,7 @@ PAPER_STATIC_AUDIT_TOOL_IDS = (
     "mineru.parse_pdf",
     "paper.evidence_ledger",
     "paper.numeric_forensics",
+    PAPERFRAUD_RULE_MATCH_TOOL_ID,
     "material.inventory",
     "source_data.profile",
     SOURCE_DATA_FINDINGS_TOOL_ID,
@@ -292,6 +305,7 @@ STATIC_AUDIT_V1_TOOL_IDS = (
     "mineru.parse_pdf",
     "paper.evidence_ledger",
     "paper.numeric_forensics",
+    PAPERFRAUD_RULE_MATCH_TOOL_ID,
     "material.inventory",
     "agent.material_plan",
     "source_data.profile",

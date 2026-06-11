@@ -1,0 +1,175 @@
+# 数值取证规则
+# 来源: paperfraud/checks/numbers/ (py_statcheck, grim, benford, arithmetic, digit_pref, identical_values)
+# 用途: 静态材料核查 — 数据造假检测
+# 维护者: 数值取证审查组
+
+category: "数值取证"
+type: "fraud_detection"
+description: >
+  检测论文中数值数据的异常模式。
+  这些方法来自法务统计学 (forensic statistics)，
+  专门用于发现数据编造或篡改的证据。
+  检测到的信号需要人工复核确认。
+
+rules:
+  # ── GRIM ─────────────────────────────────────────────────────────────
+  - id: "numbers.grim_inconsistency"
+    category: "数值取证"
+    subcategory: "数值一致性"
+    title: "GRIM 检验——均值和样本量不匹配"
+    severity: "red"
+    type: "fraud_detection"
+    description: >
+      GRIM (Granularity-Related Inconsistency of Means) 检验：
+      给定整数 Likert 量表或计数资料，某些均值在数学上不可能出现。
+      例如：n=20 的 1-5 量表，均值 3.47 不可能存在。
+      这是数据编造的铁证之一。
+    detection:
+      triggers:
+        keywords:
+          - pattern: "(?:mean|average|M)\\s*[=＝]\\s*\\d+\\.\\d+.*?(?:n|N)\\s*[=＝]\\s*\\d+"
+            type: "regex"
+          - pattern: "(?:n|N)\\s*[=＝]\\s*\\d+.*?(?:mean|average|M)\\s*[=＝]\\s*\\d+\\.\\d+"
+            type: "regex"
+    evidence_template: >
+      [RULE numbers.grim_inconsistency]
+      GRIM 检验：均值与样本量数学不一致。上下文: "{excerpt}"
+    human_review: >
+      使用 GRIM 测试计算给定 n 和量表范围下均值是否数学上可能。
+      如果不可能，这是数据编造或错误报告的铁证。
+    references:
+      - "Brown NJL, Heathers JAJ. The GRIM Test. Soc Psychol Personal Sci. 2017."
+    source: "paperfraud/checks/numbers/grim.py"
+
+  # ── Benford ────────────────────────────────────────────────────────────
+  - id: "numbers.benford_violation"
+    category: "数值取证"
+    subcategory: "数值分布"
+    title: "Benford 定律——首位数分布异常"
+    severity: "yellow"
+    type: "fraud_detection"
+    description: >
+      Benford 定律预测自然产生的数值中首位数字的分布规律。
+      偏离 Benford 分布可能暗示数据编造或人为修改。
+      注意：Benford 检验并非对所有数据类型适用，需结合上下文判断。
+    detection:
+      triggers:
+        keywords:
+          - pattern: "(?:Table|table|数据).*(?:\\d+|\\d+\\.\\d+)"
+            type: "regex"
+    evidence_template: >
+      [RULE numbers.benford_violation]
+      数值分布偏离 Benford 定律预期。上下文: "{excerpt}"
+      注意：需确认数据类型是否适用于 Benford 分析。
+    human_review: >
+      Benford 检验适用于跨度多个数量级的自然数据（如财务、人口数据）。
+      不适用于有限范围的数据（如血压、体温）。请结合数据特性判断。
+    references:
+      - "Benford F. The Law of Anomalous Numbers. Proc Am Philos Soc. 1938."
+      - "Diekmann A. Not the First Digit! Using Benford's Law. J Appl Stat. 2007."
+    source: "paperfraud/checks/numbers/benford.py"
+
+  # ── 算术错误 ─────────────────────────────────────────────────────────
+  - id: "numbers.arithmetic_error"
+    category: "数值取证"
+    subcategory: "数值一致性"
+    title: "算术一致性——百分比/总数不匹配"
+    severity: "red"
+    type: "fraud_detection"
+    description: >
+      表格中的百分比之和不为 100%，或子类别加总不等于总计数。
+      这可能是：数据编造时的计算错误、四舍五入累积、或排版错误。
+    detection:
+      triggers:
+        keywords:
+          - pattern: "(?:total|sum|合计|总计)\\s*[=＝]\\s*\\d+"
+            type: "regex"
+          - pattern: "\\d+(?:\\.\\d+)?%\\s*[,\\(]\\s*(?:n|N)\\s*[=＝]\\s*\\d+"
+            type: "regex"
+    evidence_template: >
+      [RULE numbers.arithmetic_error]
+      数值一致性检测异常。上下文: "{excerpt}"
+    human_review: >
+      手动核实表格中百分比加总是否为 100%，
+      子类别加总是否等于总计数。允许小幅四舍五入偏差。
+    references:
+      - "Cole TJ. Too Many Digits: The Presentation of Numerical Data. Arch Dis Child. 2015."
+    source: "paperfraud/checks/numbers/arithmetic.py"
+
+  # ── 数字偏好 ─────────────────────────────────────────────────────────
+  - id: "numbers.digit_preference"
+    category: "数值取证"
+    subcategory: "数值分布"
+    title: "末位数字偏好——人为凑整信号"
+    severity: "yellow"
+    type: "fraud_detection"
+    description: >
+      自然测量的末位数字应均匀分布（0-9均匀出现），
+      集中出现 0 或 5 暗示人工凑整或编造。
+      常见于血压、身高、体重等手动测量数据。
+    detection:
+      triggers:
+        keywords:
+          - pattern: "\\d{2,}\\.?\\d*"
+            type: "regex"
+    evidence_template: >
+      [RULE numbers.digit_preference]
+      末位数字分布异常，疑似人工凑整。上下文: "{excerpt}"
+    human_review: >
+      检查末位数字分布是否均匀。0 和 5 出现频率异常高暗示人工凑整。
+    references:
+      - "Preece DA. Distributions of Final Digits in Data. The Statistician. 1981."
+    source: "paperfraud/checks/numbers/digit_pref.py"
+
+  # ── 相同值 ───────────────────────────────────────────────────────────
+  - id: "numbers.identical_values"
+    category: "数值取证"
+    subcategory: "数值一致性"
+    title: "整列/整行数值完全相同——疑似复制粘贴"
+    severity: "red"
+    type: "fraud_detection"
+    description: >
+      表格中整列或整行数值（包括均值和标准差）完全相同，
+      暗示可能是复制粘贴而非真实测量数据。
+    detection:
+      triggers:
+        keywords:
+          - pattern: "(?:Table|table|表).*(?:\\d+(?:\\.\\d+)?\\s*[±±]\\s*\\d+(?:\\.\\d+)?)"
+            type: "regex"
+    evidence_template: >
+      [RULE numbers.identical_values]
+      检测到高度重复的数值模式——疑似复制粘贴。上下文: "{excerpt}"
+    human_review: >
+      手动对比表格中不同组的均值和标准差。
+      完全相同或高度相似的值组合可能来自复制粘贴。
+    references:
+      - "Bordewijk EM, et al. Detecting Data Fabrication. Fertil Steril. 2021."
+    source: "paperfraud/checks/numbers/identical_values.py"
+
+  # ── statcheck ─────────────────────────────────────────────────────────
+  - id: "numbers.statcheck_inconsistency"
+    category: "数值取证"
+    subcategory: "统计报告"
+    title: "statcheck——报告统计量与 p 值不一致"
+    severity: "red"
+    type: "fraud_detection"
+    description: >
+      从报告的检验统计量（t/F/χ²）和自由度重新计算 p 值，
+      与论文报告的 p 值不一致。可能是：
+      统计检验选择错误、选择性报告、或 p 值编造。
+    detection:
+      triggers:
+        keywords:
+          - pattern: "(?:t|F|χ²|chi.square)\\s*[=＝]\\s*\\d+(?:\\.\\d+)?.*?(?:p|P)\\s*[<≤=]\\s*0?\\.\\d+"
+            type: "regex"
+          - pattern: "(?:p|P)\\s*[<≤=]\\s*0?\\.\\d+.*?(?:t|F|χ²|chi.square)\\s*[=＝]\\s*\\d+(?:\\.\\d+)?"
+            type: "regex"
+    evidence_template: >
+      [RULE numbers.statcheck_inconsistency]
+      从检验统计量和自由度反算的 p 值与论文报告不一致。上下文: "{excerpt}"
+    human_review: >
+      使用 statcheck 算法反算 p 值，与论文报告的 p 值比较。
+      不一致可能是四舍五入、单双侧误用、或 p 值编造。
+    references:
+      - "Nuijten MB, et al. Statcheck: Detecting Statistical Reporting Inconsistencies. Behav Res Methods. 2016."
+    source: "paperfraud/checks/numbers/py_statcheck.py"

@@ -43,6 +43,10 @@ from engine.static_audit.materials import (
     fallback_optional_lanes,
     write_material_inventory,
 )
+from engine.static_audit.tools.paperfraud_rules import (
+    paperfraud_findings_from_matches,
+    run_paperfraud_rule_match,
+)
 from engine.static_audit.roles import ROLE_DEFINITIONS, RoleDefinition, skipped_trace
 from engine.investigation.opencode_agent import (
     DEFAULT_SOURCE_FINDING_PARAMS,
@@ -58,6 +62,7 @@ from engine.investigation.opencode_agent import (
 from engine.tools.registry import (
     IMAGE_SIMILARITY_TOOL_ID,
     PAPER_STATIC_AUDIT_TOOL_IDS,
+    PAPERFRAUD_RULE_MATCH_TOOL_ID,
     SOURCE_DATA_CROSS_SHEET_TOOL_ID,
     SOURCE_DATA_FINDINGS_TOOL_ID,
     SOURCE_DATA_PAIR_FORENSICS_TOOL_ID,
@@ -74,6 +79,7 @@ STEP_TOOL_IDS = {
     "mineru": "mineru.parse_pdf",
     "evidence_ledger": "paper.evidence_ledger",
     "numeric_forensics": "paper.numeric_forensics",
+    "paperfraud_rule_match": PAPERFRAUD_RULE_MATCH_TOOL_ID,
     "material_inventory": "material.inventory",
     "agent_material_plan": "agent.material_plan",
     "source_data_profile": "source_data.profile",
@@ -1618,6 +1624,7 @@ def collect_evidence_items(workdir: Path) -> list[EvidenceItem]:
         ("agent_material_plan.json", "output_artifact"),
         ("evidence_ledger.json", "output_artifact"),
         ("numeric_forensics.json", "output_artifact"),
+        ("paperfraud_rule_matches.json", "output_artifact"),
         ("source_data_profile.json", "output_artifact"),
         ("source_data_findings.json", "output_artifact"),
         ("source_data_pair_forensics.json", "output_artifact"),
@@ -1702,6 +1709,9 @@ def collect_claims_and_findings(
         )
 
     findings: list[Finding] = []
+    # PaperFraud rule matches → canonical findings
+    paperfraud_matches = read_json(workdir / "paperfraud_rule_matches.json") or {}
+    findings.extend(paperfraud_findings_from_matches(paperfraud_matches))
     for item in source_findings.get("priority_findings") or []:
         finding_id = str(item.get("finding_id"))
         findings.append(
@@ -2411,9 +2421,36 @@ def _run_static_audit_from_args(
                 progress=progress,
             )
         )
+        # ── PaperFraud rule matching ──────────────────────────────────
+        paperfraud_output = workdir / "paperfraud_rule_matches.json"
+        if paperfraud_output.exists() and not args.force:
+            record_step(
+                steps,
+                StepResult(
+                    "paperfraud_rule_match",
+                    "PaperFraud 规则库匹配",
+                    "reused",
+                    "Existing paperfraud_rule_matches.json found.",
+                ),
+                progress,
+            )
+        else:
+            emit_step_start(
+                progress,
+                "paperfraud_rule_match",
+                "PaperFraud 规则库匹配",
+                "Matching structured PaperFraud rules against parsed paper text.",
+            )
+            run_paperfraud_rule_match(workdir / "full.md", paperfraud_output)
+            record_step(
+                steps,
+                StepResult("paperfraud_rule_match", "PaperFraud 规则库匹配", "ran", str(paperfraud_output)),
+                progress,
+            )
     else:
         record_step(steps, StepResult("evidence_ledger", "构建 evidence ledger", "skipped", "full.md missing."), progress)
         record_step(steps, StepResult("numeric_forensics", "PDF 数字取证", "skipped", "full.md missing."), progress)
+        record_step(steps, StepResult("paperfraud_rule_match", "PaperFraud 规则库匹配", "skipped", "full.md missing."), progress)
 
     if source_lane and source_data_dir and source_data_dir.is_dir():
         steps.append(

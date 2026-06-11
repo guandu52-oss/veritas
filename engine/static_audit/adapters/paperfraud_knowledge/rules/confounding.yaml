@@ -1,0 +1,302 @@
+# 混杂控制评估规则 (8 条)
+# 来源: paperfraud/checks/public_health/confounding.py
+# 用途: 静态材料核查 — 方法论质量评估
+# 注意: 检测混杂控制是否充分，而非数据造假。
+#       方法论缺陷 ≠ 学术不端。
+# 维护者: 流行病学方法论审查组
+
+category: "混杂控制"
+type: "methodology_review"  # methodology_review | fraud_detection
+description: >
+  评估观察性研究中混杂因素的控制策略。
+  混杂是观察性流行病学的核心有效性威胁。
+  LLM Agent 常能发现统计错误但忽略混杂控制不足。
+
+rules:
+  # ── Rule 1 ──────────────────────────────────────────────────────────
+  - id: "confounding.no_control"
+    category: "混杂控制"
+    subcategory: "混杂控制方法"
+    title: "观察性研究未使用任何混杂控制方法"
+    severity: "red"
+    description: >
+      观察性研究中，暴露组和对照组在基线特征上的差异
+      必须通过统计方法加以控制。未控制混杂的观察性研究因果推断价值极低。
+    detection:
+      triggers:
+        study_types:
+          - "observational"
+      negative_triggers:
+        - "adjust"
+        - "adjusted for"
+        - "adjusted by"
+        - "adjusting for"
+        - "stratified"
+        - "stratification"
+        - "multivariable"
+        - "multivariate"
+        - "multiple logistic regression"
+        - "multiple linear regression"
+        - "Cox regression"
+        - "propensity score"
+        - "校正"
+        - "调整"
+        - "分层"
+        - "多变量"
+    evidence_template: >
+      [RULE confounding.no_control]
+      观察性研究未提及任何混杂控制方法（无校正/分层/多变量/倾向性评分）。
+    human_review: >
+      确认论文是否确实未使用任何混杂控制方法。
+      观察性研究必须使用多变量/分层/倾向性评分等方法控制混杂。
+    references:
+      - "Rothman KJ, et al. Modern Epidemiology. 3rd ed. 2008."
+    source: "paperfraud/checks/public_health/confounding.py"
+
+  # ── Rule 2 ──────────────────────────────────────────────────────────
+  - id: "confounding.univariate_only"
+    category: "混杂控制"
+    subcategory: "统计方法"
+    title: "仅使用单变量分析但声称因果/独立关联"
+    severity: "red"
+    description: >
+      单变量分析发现显著差异后，必须使用多变量回归控制混杂
+      才能声称'独立关联'。仅凭单变量结果声称因果属于方法学错误。
+    detection:
+      triggers:
+        study_types:
+          - "observational"
+        keywords:
+          - pattern: "univariate|chi[ .]square|t[ .-]test|Mann[ .-]Whitney|Wilcoxon|Fisher.{0,3}s exact"
+            type: "regex"
+          - pattern: "independently (?:associated|predicted|linked)|risk factor for|cause of|protective factor|determinant of|increases? (?:the )?risk of"
+            type: "regex"
+          - pattern: "独立危险因素|病因|致病因素"
+            type: "regex"
+      negative_triggers:
+        - "multivariable"
+        - "multivariate"
+        - "Cox regression"
+        - "logistic regression"
+        - "linear regression"
+        - "propensity score"
+        - "多变量"
+        - "多元"
+    evidence_template: >
+      [RULE confounding.univariate_only]
+      仅使用单变量分析但声称因果/独立关联。
+      单变量分析不能控制混杂，不能推断独立效应。
+    human_review: >
+      确认论文是否进行了多变量分析还是仅单变量分析。
+      单变量分析发现显著差异 ≠ 独立效应。
+    references:
+      - "Sun GW, et al. Inappropriate Use of Bivariable Analysis. Surgery. 1996."
+    source: "paperfraud/checks/public_health/confounding.py"
+
+  # ── Rule 3 ──────────────────────────────────────────────────────────
+  - id: "confounding.collider_overadjustment"
+    category: "混杂控制"
+    subcategory: "过度调整"
+    title: "疑似调整中介或碰撞变量——过度调整偏倚"
+    severity: "orange"
+    description: >
+      调整中介变量会阻断暴露→结局的间接效应，导致总效应被低估。
+      调整碰撞节点（collider）会引入而非消除偏倚。
+    detection:
+      triggers:
+        keywords:
+          - "collider bias"
+          - "collider stratification"
+          - "collider"
+          - "碰撞节点"
+          - "对撞偏倚"
+      additional_conditions:
+        - "or: pattern_adjusted_mediator"
+    evidence_template: >
+      [RULE confounding.collider_overadjustment]
+      疑似调整了中介变量或碰撞节点——可能存在过度调整偏倚。
+    human_review: >
+      确认 DAG 中调整变量的选择是否合理。
+      调整中介变量会阻断间接效应，调整碰撞节点会引入虚假关联。
+    references:
+      - "Greenland S, et al. Causal Diagrams for Epidemiologic Research. Epidemiology. 1999."
+      - "Schisterman EF, et al. Overadjustment Bias. Epidemiology. 2009."
+    source: "paperfraud/checks/public_health/confounding.py"
+
+  # ── Rule 4 ──────────────────────────────────────────────────────────
+  - id: "confounding.propensity_incomplete"
+    category: "混杂控制"
+    subcategory: "倾向性评分"
+    title: "倾向性评分缺少方法学细节"
+    severity: "orange"
+    description: >
+      提及倾向性评分但未说明具体方法（匹配/加权/分层/校正）。
+      倾向性评分的有效性取决于方法实现细节。
+    detection:
+      triggers:
+        keywords:
+          - "propensity score"
+          - "PSM"
+          - "倾向性评分"
+      negative_triggers:
+        - "propensity score matching"
+        - "propensity score weighting"
+        - "propensity score stratification"
+        - "propensity score adjustment"
+        - "inverse probability"
+        - "IPTW"
+        - "caliper matching"
+        - "greedy matching"
+        - "optimal matching"
+        - "倾向性评分匹配"
+        - "倾向性评分加权"
+    evidence_template: >
+      [RULE confounding.propensity_incomplete]
+      提及倾向性评分但未说明具体方法（匹配/加权/分层/校正）。
+    human_review: >
+      倾向性评分应说明：PS 模型的变量、匹配算法（贪婪/最优）、
+      卡钳宽度、匹配比例、平衡性检验（SMD）、以及匹配后分析方法。
+    references:
+      - "Austin PC. An Introduction to Propensity Score Methods. Multivariate Behav Res. 2011."
+    source: "paperfraud/checks/public_health/confounding.py"
+
+  # ── Rule 5 ──────────────────────────────────────────────────────────
+  - id: "confounding.stratification_sparse"
+    category: "混杂控制"
+    subcategory: "分层分析"
+    title: "分层分析变量过少"
+    severity: "yellow"
+    description: >
+      分层分析通常至少应包括年龄和性别，根据研究问题
+      还应加入已知的强混杂因素。
+    detection:
+      triggers:
+        keywords:
+          - "stratified"
+          - "stratification"
+          - "subgroup analysis"
+          - "分层"
+          - "亚组分析"
+      additional_conditions:
+        - "check: n_strat_vars <= 1"
+    evidence_template: >
+      [RULE confounding.stratification_sparse]
+      分层分析变量过少——通常不足以控制关键混杂。
+    human_review: >
+      至少应包括年龄和性别，并根据研究问题加入已知的强混杂因素。
+    references:
+      - "Greenland S. Stratified Analysis. In: Modern Epidemiology. 2008."
+    source: "paperfraud/checks/public_health/confounding.py"
+
+  # ── Rule 6 ──────────────────────────────────────────────────────────
+  - id: "confounding.table1_no_test"
+    category: "混杂控制"
+    subcategory: "基线特征"
+    title: "基线表未提供组间比较"
+    severity: "yellow"
+    description: >
+      基线特征表应报告各组间的统计检验结果或标准化差异 (SMD)，
+      以评估组间可比性。
+    detection:
+      triggers:
+        keywords:
+          - "Table 1"
+          - "baseline characteristics"
+          - "baseline demographics"
+          - "表 1"
+          - "基线特征"
+          - "基线资料"
+      negative_triggers:
+        - "p <"
+        - "p ="
+        - "p<"
+        - "chi-square"
+        - "chi square"
+        - "t-test"
+        - "t test"
+        - "Mann-Whitney"
+        - "ANOVA"
+        - "Kruskal-Wallis"
+        - "between-group"
+        - "between group"
+    evidence_template: >
+      [RULE confounding.table1_no_test]
+      基线表 (Table 1) 未提供组间比较的统计检验。
+      无法评估随机化效果或混杂程度。
+    human_review: >
+      基线特征表应报告各组间比较的 P 值或标准化差异 (SMD)。
+      RCT 中建议使用 SMD 而非 P 值评估基线均衡性。
+    references:
+      - "Knol MJ, et al. Standardized Mean Differences in Baseline Tables. J Clin Epidemiol. 2011."
+    source: "paperfraud/checks/public_health/confounding.py"
+
+  # ── Rule 7 ──────────────────────────────────────────────────────────
+  - id: "confounding.no_residual_discussion"
+    category: "混杂控制"
+    subcategory: "残余混杂"
+    title: "未讨论残余混杂"
+    severity: "yellow"
+    description: >
+      即使进行了多变量校正，未测量的混杂因素仍可能影响结果。
+      应在 Limitations 中讨论残余混杂的可能性。
+    detection:
+      triggers:
+        keywords:
+          - "adjust"
+          - "multivariate"
+          - "multivariable"
+          - "propensity"
+          - "校正"
+          - "多变量"
+      negative_triggers:
+        - "residual confounding"
+        - "unmeasured confounding"
+        - "uncontrolled confounding"
+        - "unobserved confounding"
+        - "confounding by indication"
+        - "残余混杂"
+        - "未测量混杂"
+    evidence_template: >
+      [RULE confounding.no_residual_discussion]
+      已使用了混杂控制方法但未讨论残余混杂。
+      所有观察性研究都存在残余混杂的可能性。
+    human_review: >
+      应在 Discussion/Limitations 中讨论未测量混杂对结果的可能影响。
+    references:
+      - "Fewell Z, et al. Controlling for Time-Dependent Confounding. Epidemiology. 2007."
+    source: "paperfraud/checks/public_health/confounding.py"
+
+  # ── Rule 8 ──────────────────────────────────────────────────────────
+  - id: "confounding.missing_data_unaddressed"
+    category: "混杂控制"
+    subcategory: "缺失数据"
+    title: "缺失数据未处理"
+    severity: "orange"
+    description: >
+      检测到数据缺失信号但未说明缺失数据处理方法。
+      应报告缺失比例、处理方式和缺失机制假设。
+    detection:
+      triggers:
+        keywords:
+          - pattern: "(?:missing|unavailable|incomplete|excluded (?:due|because|for|from)|lost to follow)"
+            type: "regex"
+      negative_triggers:
+        - "imputation"
+        - "multiple imputation"
+        - "MICE"
+        - "complete case analysis"
+        - "last observation carried forward"
+        - "sensitivity analysis"
+        - "missing data"
+        - "插补"
+        - "缺失"
+        - "敏感性分析"
+    evidence_template: >
+      [RULE confounding.missing_data_unaddressed]
+      检测到数据缺失信号但未说明缺失数据处理方法。
+    human_review: >
+      应报告：(1) 各变量的缺失比例，(2) 缺失数据的处理方式
+      （完全案例分析/MI/LOCF/敏感性分析），(3) 缺失机制假设（MCAR/MAR/MNAR）。
+    references:
+      - "Sterne JAC, et al. Multiple Imputation for Missing Data. BMJ. 2009."
+    source: "paperfraud/checks/public_health/confounding.py"

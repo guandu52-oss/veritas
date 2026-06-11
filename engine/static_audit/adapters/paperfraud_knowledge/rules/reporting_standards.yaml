@@ -1,0 +1,354 @@
+# 报告规范符合性规则 (10 条)
+# 来源: paperfraud/checks/public_health/reporting_standards.py
+# 用途: 静态材料核查 — 方法论质量评估
+# 注意: 检测报告规范是否完整，而非数据造假。
+#       报告规范缺失 ≠ 学术不端，但影响论文可信度。
+# 维护者: 流行病学方法论审查组
+
+category: "报告规范"
+type: "methodology_review"
+description: >
+  检查生物医学论文是否遵循国际公认的报告指南。
+  这些是最常见的报告规范违反项，
+  LLM Agent 常直接接受论文而忽略基础报告要求。
+
+rules:
+  # ── Rule 1 ──────────────────────────────────────────────────────────
+  - id: "reporting.rct_no_consort"
+    category: "报告规范"
+    subcategory: "RCT 报告"
+    title: "RCT 未引用 CONSORT 声明"
+    severity: "orange"
+    description: >
+      CONSORT 2010 包含 25 项检查清单和流程图，
+      是 RCT 报告的必备规范。多数期刊要求投稿时提交 CONSORT checklist。
+    detection:
+      triggers:
+        study_types:
+          - "rct"
+      negative_triggers:
+        - "CONSORT"
+        - "Consolidated Standards of Reporting Trials"
+    evidence_template: >
+      [RULE reporting.rct_no_consort]
+      RCT/临床试验未引用 CONSORT 声明——CONSORT 是 RCT 报告的国际标准。
+    human_review: >
+      确认论文是否在方法或补充材料中引用了 CONSORT checklist。
+    references:
+      - "Schulz KF, et al. CONSORT 2010 Statement. BMJ. 2010."
+    source: "paperfraud/checks/public_health/reporting_standards.py"
+
+  # ── Rule 2 ──────────────────────────────────────────────────────────
+  - id: "reporting.rct_no_randomization_method"
+    category: "报告规范"
+    subcategory: "RCT 报告"
+    title: "RCT 未描述随机化方法"
+    severity: "red"
+    description: >
+      仅声称'randomized'不足以证明随机化真正实施。
+      应说明序列生成方法（简单/区组/分层）、随机比例和分层因素。
+    detection:
+      triggers:
+        study_types:
+          - "rct"
+      negative_triggers:
+        - "simple random"
+        - "block random"
+        - "stratified random"
+        - "computer-generated random"
+        - "random number table"
+        - "random number generator"
+        - "permuted block"
+        - "minimization"
+        - "urn randomization"
+        - "coin flip"
+        - "sealed envelope"
+        - "随机数字表"
+        - "区组随机"
+        - "分层随机"
+        - "简单随机"
+    evidence_template: >
+      [RULE reporting.rct_no_randomization_method]
+      声称随机对照试验但未描述具体随机化方法。
+      仅声称'randomized'不足以证明随机化真正实施。
+    human_review: >
+      随机化方法应包括：(1) 序列生成方法，(2) 随机比例，(3) 分层因素。
+      未描述随机化方法的 RCT 可能未真正随机化。
+    references:
+      - "Schulz KF, Grimes DA. Generation of Allocation Sequences. Lancet. 2002."
+    source: "paperfraud/checks/public_health/reporting_standards.py"
+
+  # ── Rule 3 ──────────────────────────────────────────────────────────
+  - id: "reporting.rct_no_blinding"
+    category: "报告规范"
+    subcategory: "RCT 报告"
+    title: "RCT 未提及盲法"
+    severity: "orange"
+    description: >
+      无盲法的 RCT 存在显著的 performance bias 和 detection bias 风险。
+    detection:
+      triggers:
+        study_types:
+          - "rct"
+      negative_triggers:
+        - "double-blind"
+        - "single-blind"
+        - "triple-blind"
+        - "open-label"
+        - "unblind"
+        - "blinding"
+        - "blinded"
+        - "masked"
+        - "masking"
+        - "双盲"
+        - "单盲"
+        - "开放标签"
+        - "盲法"
+        - "设盲"
+    evidence_template: >
+      [RULE reporting.rct_no_blinding]
+      RCT 未提及盲法——无盲法的 RCT 存在显著的偏倚风险。
+    human_review: >
+      应报告：(1) 是否设盲，(2) 设盲对象，(3) 如为开放标签需说明理由。
+    references:
+      - "Schulz KF, Grimes DA. Blinding in RCTs. Lancet. 2002."
+    source: "paperfraud/checks/public_health/reporting_standards.py"
+
+  # ── Rule 4 ──────────────────────────────────────────────────────────
+  - id: "reporting.rct_no_allocation_concealment"
+    category: "报告规范"
+    subcategory: "RCT 报告"
+    title: "RCT 未报告分配隐藏"
+    severity: "red"
+    description: >
+      缺乏分配隐藏的 RCT 存在显著的 selection bias。
+      分配隐藏防止入组前知晓分组，不同于盲法。
+      缺乏分配隐藏的 RCT 效应量平均夸大 30-40%。
+    detection:
+      triggers:
+        study_types:
+          - "rct"
+      negative_triggers:
+        - "allocation concealment"
+        - "concealed allocation"
+        - "central randomization"
+        - "sequentially numbered"
+        - "sealed envelope"
+        - "sealed opaque"
+        - "pharmacy-controlled"
+        - "分配隐藏"
+        - "隐匿分组"
+        - "中心随机"
+    evidence_template: >
+      [RULE reporting.rct_no_allocation_concealment]
+      RCT 未报告分配隐藏——缺乏分配隐藏的 RCT 存在显著的 selection bias。
+    human_review: >
+      分配隐藏 ≠ 盲法：前者防止入组前知晓分组，后者防止入组后知晓。
+      方法包括：中心随机、药房控制、密封不透光信封。
+    references:
+      - "Schulz KF, et al. Subverting Randomization in Controlled Trials. JAMA. 1995."
+    source: "paperfraud/checks/public_health/reporting_standards.py"
+
+  # ── Rule 5 ──────────────────────────────────────────────────────────
+  - id: "reporting.observational_no_strobe"
+    category: "报告规范"
+    subcategory: "观察性研究报告"
+    title: "观察性研究未引用 STROBE 声明"
+    severity: "yellow"
+    description: >
+      STROBE 包含 22 项检查清单，是观察性研究报告的国际标准。
+    detection:
+      triggers:
+        study_types:
+          - "observational"
+      negative_triggers:
+        - "STROBE"
+        - "Strengthening the Reporting of Observational"
+    evidence_template: >
+      [RULE reporting.observational_no_strobe]
+      观察性研究未引用 STROBE 声明。
+    human_review: >
+      观察性研究应遵循 STROBE 声明的要求。
+    references:
+      - "von Elm E, et al. STROBE Initiative. Lancet. 2007."
+    source: "paperfraud/checks/public_health/reporting_standards.py"
+
+  # ── Rule 6 ──────────────────────────────────────────────────────────
+  - id: "reporting.sr_no_prisma"
+    category: "报告规范"
+    subcategory: "系统综述报告"
+    title: "系统综述未引用 PRISMA 声明"
+    severity: "orange"
+    description: >
+      PRISMA 2020 包含 27 项检查清单和流程图，
+      是系统综述报告的必备标准。
+    detection:
+      triggers:
+        study_types:
+          - "systematic_review"
+      negative_triggers:
+        - "PRISMA"
+        - "Preferred Reporting Items for Systematic"
+    evidence_template: >
+      [RULE reporting.sr_no_prisma]
+      系统综述/Meta分析未引用 PRISMA 声明。
+    human_review: >
+      多数期刊要求投稿时提交 PRISMA checklist 作为补充材料。
+    references:
+      - "Page MJ, et al. PRISMA 2020 Statement. BMJ. 2021."
+    source: "paperfraud/checks/public_health/reporting_standards.py"
+
+  # ── Rule 7 ──────────────────────────────────────────────────────────
+  - id: "reporting.diagnostic_no_stard"
+    category: "报告规范"
+    subcategory: "诊断研究报告"
+    title: "诊断准确性研究未引用 STARD 声明"
+    severity: "orange"
+    description: >
+      STARD 2015 包含 30 项检查清单，特别关注患者选择偏倚和参考标准偏倚。
+    detection:
+      triggers:
+        study_types:
+          - "diagnostic"
+      negative_triggers:
+        - "STARD"
+        - "Standards for Reporting of Diagnostic"
+    evidence_template: >
+      [RULE reporting.diagnostic_no_stard]
+      诊断准确性研究未引用 STARD 声明。
+    human_review: >
+      STARD 2015 特别关注患者选择偏倚和参考标准偏倚。
+    references:
+      - "Bossuyt PM, et al. STARD 2015. BMJ. 2015."
+    source: "paperfraud/checks/public_health/reporting_standards.py"
+
+  # ── Rule 8 ──────────────────────────────────────────────────────────
+  - id: "reporting.no_ethics_approval"
+    category: "报告规范"
+    subcategory: "伦理合规"
+    title: "涉及人/动物的研究未声明伦理审批"
+    severity: "red"
+    description: >
+      这是学术出版的基本伦理要求。
+      涉及人类受试者必须声明伦理委员会审批和赫尔辛基宣言遵循。
+      涉及动物必须声明 IACUC 审批和 ARRIVE 指南遵循。
+    detection:
+      triggers:
+        keywords:
+          - "patients"
+          - "subjects"
+          - "participants"
+          - "volunteers"
+          - "human subjects"
+          - "human participants"
+          - "mice"
+          - "mouse"
+          - "rats"
+          - "rabbits"
+          - "animals"
+          - "患者"
+          - "受试者"
+          - "小鼠"
+          - "大鼠"
+          - "动物实验"
+      negative_triggers:
+        - "ethics committee"
+        - "ethics board"
+        - "ethics approval"
+        - "institutional review board"
+        - "IRB"
+        - "IACUC"
+        - "ethical approval"
+        - "Helsinki Declaration"
+        - "ARRIVE guidelines"
+        - "伦理委员会"
+        - "伦理审批"
+        - "伦理审查"
+        - "赫尔辛基宣言"
+    evidence_template: >
+      [RULE reporting.no_ethics_approval]
+      涉及人/动物受试者的研究未声明伦理审批。
+    human_review: >
+      人体研究须声明伦理审批 + 赫尔辛基宣言；动物研究须声明 IACUC + ARRIVE。
+    references:
+      - "World Medical Association. Declaration of Helsinki. 2013."
+      - "Kilkenny C, et al. ARRIVE Guidelines. PLOS Biology. 2010."
+    source: "paperfraud/checks/public_health/reporting_standards.py"
+
+  # ── Rule 9 ──────────────────────────────────────────────────────────
+  - id: "reporting.no_informed_consent"
+    category: "报告规范"
+    subcategory: "伦理合规"
+    title: "涉及人类受试者的研究未声明知情同意"
+    severity: "red"
+    description: >
+      知情同意是人体研究的核心伦理原则。
+      除非伦理委员会批准豁免（如回顾性匿名数据），
+      所有人体研究必须报告知情同意过程。
+    detection:
+      triggers:
+        keywords:
+          - "patients"
+          - "subjects"
+          - "participants"
+          - "volunteers"
+          - "human subjects"
+          - "患者"
+          - "受试者"
+          - "志愿者"
+      negative_triggers:
+        - "informed consent"
+        - "written consent"
+        - "oral consent"
+        - "parental consent"
+        - "guardian consent"
+        - "assent"
+        - "知情同意"
+        - "书面同意"
+        - "口头同意"
+    evidence_template: >
+      [RULE reporting.no_informed_consent]
+      涉及人类受试者的研究未声明知情同意。
+    human_review: >
+      除非伦理委员会批准豁免，所有人体研究必须报告知情同意过程。
+    references:
+      - "World Medical Association. Declaration of Helsinki. 2013."
+    source: "paperfraud/checks/public_health/reporting_standards.py"
+
+  # ── Rule 10 ──────────────────────────────────────────────────────────
+  - id: "reporting.trial_no_registration"
+    category: "报告规范"
+    subcategory: "临床试验注册"
+    title: "临床试验未报告注册号"
+    severity: "orange"
+    description: >
+      ICMJE 要求所有临床试验在首例受试者入组前完成注册。
+      未注册的 RCT 存在选择性报告和发表偏倚的高风险。
+    detection:
+      triggers:
+        study_types:
+          - "rct"
+      negative_triggers:
+        - "ClinicalTrials.gov"
+        - "clinical trial registration"
+        - "trial registration number"
+        - "UMIN-CTR"
+        - "EU Clinical Trials Register"
+        - "ISRCTN"
+        - "ChiCTR"
+        - "registered at"
+        - "registered in"
+        - "registered with"
+        - "regist"
+        - "临床试验注册"
+        - "注册号"
+        - "注册编号"
+    evidence_template: >
+      [RULE reporting.trial_no_registration]
+      临床试验未报告注册号——ICMJE 要求临床试验在入组前完成注册。
+    human_review: >
+      确认试验是否在 WHO 认可的一级注册机构完成注册。
+    references:
+      - "ICMJE. Clinical Trial Registration. 2024."
+      - "De Angelis CD, et al. Clinical Trial Registration. Lancet. 2004."
+    source: "paperfraud/checks/public_health/reporting_standards.py"
